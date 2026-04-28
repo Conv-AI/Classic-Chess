@@ -116,7 +116,7 @@ export function legalTargets(fen: string, square: Square) {
   return game.moves({ square, verbose: true }).map((move) => move.to);
 }
 
-export function buildDynamicCoachInfo(game: Chess, plannedMove?: Move | null) {
+export function buildDynamicCoachInfo(game: Chess, plannedMove?: Move | null, lastMove?: Move | null) {
   const turn = game.turn() === 'w' ? 'White to move' : 'Black to move';
   const status = game.isCheckmate()
     ? 'checkmate'
@@ -126,8 +126,49 @@ export function buildDynamicCoachInfo(game: Chess, plannedMove?: Move | null) {
         ? 'check'
         : 'normal play';
   const legalMoveCount = game.moves().length;
+  const material = materialSummary(game);
+  const lastMoveInfo = lastMove ? describeLastMove(lastMove) : 'No move has been played yet.';
   const moveHint = plannedMove ? `Danielle planned move: ${plannedMove.san} from ${plannedMove.from} to ${plannedMove.to}.` : '';
-  return `${turn}. Position status: ${status}. Legal moves available: ${legalMoveCount}. ${moveHint}`.trim();
+  return [
+    turn,
+    `Position status: ${status}.`,
+    `Legal moves available: ${legalMoveCount}.`,
+    material,
+    lastMoveInfo,
+    moveHint,
+  ].filter(Boolean).join(' ').trim();
+}
+
+function materialSummary(game: Chess) {
+  const score = materialScore(game);
+  if (Math.abs(score) < 100) return 'Material is roughly equal.';
+  const leader = score > 0 ? 'White/player' : 'Black/Danielle';
+  return `${leader} is ahead by about ${Math.abs(score)} centipawns of material.`;
+}
+
+function describeLastMove(move: Move) {
+  const mover = move.color === 'w' ? 'The player' : 'Danielle';
+  const piece = pieceName(move.piece);
+  const capture = move.captured
+    ? move.color === 'w'
+      ? ` The player captured Danielle's ${pieceName(move.captured)}; Danielle should acknowledge losing material if it matters.`
+      : ` Danielle captured the player's ${pieceName(move.captured)}.`
+    : '';
+  const check = move.san.includes('+') ? ' The move gave check.' : '';
+  const mate = move.san.includes('#') ? ' The move gave checkmate.' : '';
+  return `Last move: ${mover} moved a ${piece} from ${move.from} to ${move.to}.${capture}${check}${mate}`;
+}
+
+function pieceName(piece: string) {
+  const names: Record<string, string> = {
+    p: 'pawn',
+    n: 'knight',
+    b: 'bishop',
+    r: 'rook',
+    q: 'queen',
+    k: 'king',
+  };
+  return names[piece] ?? 'piece';
 }
 
 export function coachLineForPosition(game: Chess, plannedMove?: Move | null) {

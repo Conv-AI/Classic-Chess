@@ -10,5 +10,7 @@ export type MoveRecord = {
   from: string;
   to: string;
   piece: string;
+  captured?: string;
+  color: 'w' | 'b';
   by: 'You' | 'Danielle';
 };

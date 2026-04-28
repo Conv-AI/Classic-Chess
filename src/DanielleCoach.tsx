@@ -5,6 +5,7 @@ import ReallusionCharacter from './ReallusionCharacter';
 
 const DANIELLE_MODEL = `${import.meta.env.BASE_URL}danielle.glb`;
 const DANIELLE_IDLE = `${import.meta.env.BASE_URL}danielle-idle.glb`;
+const DANIELLE_BG = '#d4dce8';
 
 useGLTF.preload(DANIELLE_MODEL);
 useGLTF.preload(DANIELLE_IDLE);
@@ -18,12 +19,14 @@ export default function DanielleCoach({ status }: Props) {
     <section className="coach-card character-card" aria-label="Danielle chess coach">
       <div className="character-window">
         <Canvas
-          camera={{ position: [0, 1.4, 0.9], fov: 36 }}
+          camera={{ position: [0, 1.4, 0.9], fov: 35 }}
           dpr={[1.5, 2.5]}
           gl={{ antialias: true, alpha: false, powerPreference: 'high-performance' }}
-          onCreated={({ camera, gl }) => {
+          style={{ background: DANIELLE_BG }}
+          onCreated={({ camera, gl, scene }) => {
             camera.lookAt(0, 1.4, 0);
-            gl.setClearColor('#e0d5dd');
+            scene.background = null;
+            gl.setClearColor(DANIELLE_BG, 1);
             gl.toneMappingExposure = 1.08;
           }}
         >

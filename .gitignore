@@ -27,3 +27,5 @@ Thumbs.db
 public/*.glb
 public/*.gltf
 public/*.bin
+
+demo/

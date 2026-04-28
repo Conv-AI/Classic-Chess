@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Chess, type Move, type Square } from 'chess.js';
-import { buildDynamicCoachInfo, chooseDanielleMove, coachLineForPosition, legalTargets } from './chessAi';
+import { buildDynamicCoachInfo, legalTargets } from './chessAi';
 import { chessConvai } from './convaiManager';
 import DanielleCoach from './DanielleCoach';
 import LoadingScreen from './LoadingScreen';
 import MenuScreen from './MenuScreen';
-import type { CoachMessage, MoveRecord } from './types';
+import { stockfishEngine } from './stockfishEngine';
+import type { MoveRecord } from './types';
 
 const FILES = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'];
 const PIECES: Record<string, string> = {
@@ -22,6 +23,7 @@ const PIECES: Record<string, string> = {
   bq: '\u265b',
   bk: '\u265a',
 };
+const THINKING_WORDS = ['Scheming', 'Plotting', 'Squinting', 'Calculating', 'Mischief'];
 
 function squareAt(fileIndex: number, rankIndex: number): Square {
   return `${FILES[fileIndex]}${8 - rankIndex}` as Square;
@@ -67,14 +69,9 @@ function ChessGame({ onBackToMenu }: { onBackToMenu: () => void }) {
   const [game, setGame] = useState(() => new Chess());
   const [selected, setSelected] = useState<Square | null>(null);
   const [history, setHistory] = useState<MoveRecord[]>([]);
-  const [coachMessages, setCoachMessages] = useState<CoachMessage[]>([
-    {
-      speaker: 'Danielle',
-      text: 'I will play black and coach as we go. Control the center, develop quickly, and do not move the same piece twice without a reason.',
-    },
-  ]);
   const [thinking, setThinking] = useState(false);
-  const coachLogRef = useRef<HTMLDivElement | null>(null);
+  const [chatOpen, setChatOpen] = useState(false);
+  const [chatInput, setChatInput] = useState('');
   const moveListRef = useRef<HTMLOListElement | null>(null);
 
   const legalMoves = useMemo(() => {
@@ -86,47 +83,14 @@ function ChessGame({ onBackToMenu }: { onBackToMenu: () => void }) {
   const status = getStatus(game);
 
   useEffect(() => {
-    return chessConvai.onResponse((response) => {
-      setCoachMessages((messages) => [
-        ...messages.slice(-5),
-        { speaker: 'Danielle', text: response.text },
-      ]);
-    });
-  }, []);
-
-  useEffect(() => {
-    const timer = window.setTimeout(() => {
-      void chessConvai.speakCoachMessage(
-        'Speak as Danielle, my chess coach. Greet me briefly and invite me to play the first move. One sentence only.',
-        buildDynamicCoachInfo(game),
-      );
-    }, 500);
-    return () => window.clearTimeout(timer);
-  }, []);
-
-  useEffect(() => {
-    if (coachLogRef.current) coachLogRef.current.scrollTop = coachLogRef.current.scrollHeight;
-  }, [coachMessages]);
-
-  useEffect(() => {
     if (moveListRef.current) moveListRef.current.scrollTop = moveListRef.current.scrollHeight;
   }, [history]);
-
-  function addCoach(text: string) {
-    setCoachMessages((messages) => [...messages.slice(-5), { speaker: 'Danielle', text }]);
-  }
 
   function resetGame() {
     setGame(new Chess());
     setSelected(null);
     setHistory([]);
     setThinking(false);
-    setCoachMessages([
-      {
-        speaker: 'Danielle',
-        text: 'Fresh board. I am black again. Build a center, castle early, and I will tell you what I am trying to prove.',
-      },
-    ]);
   }
 
   function makePlayerMove(from: Square, to: Square) {
@@ -138,31 +102,31 @@ function ChessGame({ onBackToMenu }: { onBackToMenu: () => void }) {
     setHistory((moves) => [...moves, toRecord(move, 'You')]);
     setSelected(null);
 
-    if (next.isGameOver()) {
-      addCoach(coachLineForPosition(next));
-      return true;
-    }
+    if (next.isGameOver()) return true;
 
     setThinking(true);
-    window.setTimeout(() => void makeDanielleMove(next.fen()), 500);
+    void makeDanielleMove(next.fen(), move);
     return true;
   }
 
-  async function makeDanielleMove(fen: string) {
+  async function makeDanielleMove(fen: string, playerMove?: Move) {
     const next = new Chess(fen);
-    const planned = chooseDanielleMove(next.fen(), 2);
-    const dynamicInfo = buildDynamicCoachInfo(next, planned);
+    const aiStartedAt = performance.now();
+    const planned = await stockfishEngine.bestMove(next.fen(), 900);
+    console.info(`[Chess Timing] Stockfish move search: ${(performance.now() - aiStartedAt).toFixed(1)}ms`);
+    const dynamicInfo = buildDynamicCoachInfo(next, planned, playerMove);
     const prompt = planned
-      ? `Speak as Danielle, my chess coach. Briefly explain your planned move ${planned.san}. Do not choose a different move. Keep it to one friendly coaching sentence.`
-      : 'Speak as Danielle, my chess coach. Briefly comment on the current chess position.';
+      ? `Speak as Danielle, my chess coach. Give exactly one short, meaningful sentence under 18 words. React to the player's last move only if it matters, then explain the purpose of your reply. You are Danielle and this is YOUR move as black, not the player's move. My exact planned legal move is ${planned.san} from ${planned.from} to ${planned.to}, which means: ${describeMoveForSpeech(planned)}. If you lost material, admit it briefly. Say "I" or "my", not "you" or "your", when referring to your move. Do not invent another move. Do not say chess notation, square names, file-rank names, or SAN aloud. Avoid phrases like e5, f8, Bxf5, knight f3, or bishop takes f5.`
+      : 'Speak as Danielle, my chess coach. Give exactly one short, meaningful sentence under 18 words about the current position.';
 
+    const speechStartedAt = performance.now();
     const spoken = await chessConvai.speakCoachMessage(prompt, dynamicInfo);
+    console.info(`[Chess Timing] Danielle speech roundtrip: ${(performance.now() - speechStartedAt).toFixed(1)}ms`);
 
     if (planned) {
       const applied = next.move(planned);
       setGame(next);
       setHistory((moves) => [...moves, toRecord(applied, 'Danielle')]);
-      if (!spoken.trim()) addCoach(coachLineForPosition(next, applied));
     }
     setThinking(false);
   }
@@ -178,8 +142,19 @@ function ChessGame({ onBackToMenu }: { onBackToMenu: () => void }) {
         return;
       }
       if (makePlayerMove(selected, square)) return;
+      if (piece?.color === 'w') {
+        setSelected(square);
+        return;
+      }
     }
     if (piece?.color === 'w') setSelected(square);
+  }
+
+  async function sendChat() {
+    const text = chatInput.trim();
+    if (!text) return;
+    setChatInput('');
+    await chessConvai.sendUserChat(text, buildDynamicCoachInfo(game, null, lastMove ? moveRecordToMoveLike(lastMove) : null));
   }
 
   return (
@@ -187,11 +162,14 @@ function ChessGame({ onBackToMenu }: { onBackToMenu: () => void }) {
       <header className="topbar">
         <button onClick={onBackToMenu}>Menu</button>
         <h1>Classic Chess</h1>
-        <span>{history.length ? `Move ${Math.ceil(history.length / 2)}` : 'Opening'}</span>
+        <div className="topbar-actions">
+          <span>{history.length ? `Move ${Math.ceil(history.length / 2)}` : 'Opening'}</span>
+          <button onClick={() => setChatOpen((open) => !open)}>Chat</button>
+        </div>
       </header>
 
       <div className="app-shell">
-        <DanielleCoach status={thinking ? 'Thinking through candidate moves...' : status} />
+        <DanielleCoach status={thinking ? `${thinkingWord(history.length)}...` : status} />
 
         <section className="game-stage" aria-label="Chess board">
           <div className="board-wrap">
@@ -244,17 +222,6 @@ function ChessGame({ onBackToMenu }: { onBackToMenu: () => void }) {
             <button className="primary-action" onClick={resetGame}>New game</button>
           </div>
 
-          <div className="panel-card coach-card-panel">
-            <p className="eyebrow">Coach Notes</p>
-            <div className="coach-log invisible-scroll" ref={coachLogRef}>
-              {coachMessages.map((message, index) => (
-                <p key={`${message.speaker}-${index}`}>
-                  <strong>{message.speaker}:</strong> {message.text}
-                </p>
-              ))}
-            </div>
-          </div>
-
           <div className="panel-card move-card">
             <p className="eyebrow">Move List</p>
             <ol className="invisible-scroll" ref={moveListRef}>
@@ -268,12 +235,48 @@ function ChessGame({ onBackToMenu }: { onBackToMenu: () => void }) {
           </div>
         </aside>
       </div>
+
+      {chatOpen && (
+        <section className="chat-drawer" aria-label="Chat with Danielle">
+          <div className="chat-drawer-header">
+            <strong>Ask Danielle</strong>
+            <button onClick={() => setChatOpen(false)}>Minimize</button>
+          </div>
+          <textarea
+            value={chatInput}
+            onChange={(event) => setChatInput(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter' && !event.shiftKey) {
+                event.preventDefault();
+                void sendChat();
+              }
+            }}
+            placeholder="Ask about the current position..."
+          />
+          <button className="primary-action" onClick={() => void sendChat()}>Send</button>
+        </section>
+      )}
     </main>
   );
 }
 
+function thinkingWord(seed: number) {
+  return THINKING_WORDS[seed % THINKING_WORDS.length];
+}
+
 function toRecord(move: Move, by: MoveRecord['by']): MoveRecord {
-  return { san: move.san, from: move.from, to: move.to, piece: move.piece, by };
+  return { san: move.san, from: move.from, to: move.to, piece: move.piece, captured: move.captured, color: move.color, by };
+}
+
+function moveRecordToMoveLike(move: MoveRecord) {
+  return {
+    san: move.san,
+    from: move.from,
+    to: move.to,
+    piece: move.piece,
+    captured: move.captured,
+    color: move.color,
+  } as Move;
 }
 
 function pieceName(piece: string) {
@@ -286,6 +289,15 @@ function pieceName(piece: string) {
     k: 'King',
   };
   return names[piece] ?? 'Piece';
+}
+
+function describeMoveForSpeech(move: Move) {
+  const piece = pieceName(move.piece).toLowerCase();
+  if (move.flags.includes('k') || move.flags.includes('q')) return 'Danielle is castling to improve her king safety';
+  if (move.captured) return `Danielle's ${piece} captures one of the player's ${pieceName(move.captured).toLowerCase()}s`;
+  if (move.promotion) return `Danielle's pawn promotes to a ${pieceName(move.promotion).toLowerCase()}`;
+  if (move.piece === 'p') return 'Danielle is moving one of her pawns to influence the center and gain space';
+  return `Danielle is improving her ${piece} and making it more active`;
 }
 
 function getStatus(game: Chess) {

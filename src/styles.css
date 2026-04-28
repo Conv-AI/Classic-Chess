@@ -79,15 +79,23 @@ button {
   cursor: pointer;
 }
 
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  z-index: 1;
+}
+
 .app-shell {
   display: grid;
-  grid-template-columns: minmax(260px, 340px) minmax(360px, 720px) minmax(260px, 340px);
-  gap: clamp(1rem, 2vw, 1.8rem);
+  grid-template-columns: 300px 720px 300px;
+  gap: 28px;
   align-items: start;
   min-height: calc(100vh - 58px);
-  width: min(1480px, 100%);
+  width: 1376px;
+  max-width: calc(100vw - 48px);
   margin: 0 auto;
-  padding: clamp(1rem, 2.2vw, 2rem);
+  padding: clamp(1rem, 2vw, 1.5rem) 0;
 }
 
 .coach-card,
@@ -104,8 +112,8 @@ button {
   top: 1rem;
   display: flex;
   flex-direction: column;
-  width: 224px;
-  min-height: 324px;
+  width: 300px;
+  min-height: 430px;
   padding: 0;
   overflow: hidden;
   border-radius: 14px;
@@ -129,20 +137,22 @@ button {
 }
 
 .character-card {
-  background: #e0d5dd !important;
+  background: #d4dce8 !important;
 }
 
 .character-window {
   width: 100%;
-  height: 272px;
-  flex: 0 0 272px;
-  background: #e0d5dd !important;
+  height: 370px;
+  flex: 0 0 370px;
+  background:
+    radial-gradient(circle at 50% 18%, rgba(247, 250, 255, 0.92), transparent 44%),
+    linear-gradient(180deg, #d4dce8 0%, #c6d1df 100%) !important;
   border-bottom: 1px solid rgba(25, 23, 19, 0.22);
 }
 
 .character-window canvas {
   display: block;
-  background: #e0d5dd !important;
+  background: #d4dce8 !important;
 }
 
 .character-caption {
@@ -150,7 +160,9 @@ button {
   align-items: center;
   justify-content: space-between;
   gap: 0.75rem;
-  padding: 0.9rem 1rem;
+  height: 60px;
+  flex: 0 0 60px;
+  padding: 0 1rem;
   background: rgba(25, 23, 19, 0.86);
 }
 
@@ -166,6 +178,10 @@ button {
   color: var(--muted);
   font-size: 0.78rem;
   text-align: right;
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
 
 .portrait-glow {
@@ -219,16 +235,19 @@ h2 {
 
 .game-stage {
   display: grid;
-  place-items: center;
+  justify-items: center;
+  align-items: start;
   min-height: calc(100vh - 8rem);
 }
 
 .board-wrap {
+  --board-size: 640px;
   display: grid;
-  grid-template-columns: 1.4rem minmax(300px, 72vmin);
-  grid-template-rows: minmax(300px, 72vmin) 1.4rem;
-  gap: 0.45rem;
-  width: min(100%, calc(72vmin + 2.4rem));
+  grid-template-columns: 1.4rem var(--board-size);
+  grid-template-rows: var(--board-size) 0.85rem;
+  column-gap: 0.45rem;
+  row-gap: 0.45rem;
+  width: fit-content;
   padding: clamp(0.8rem, 1.6vw, 1.1rem);
   border-radius: 34px;
 }
@@ -237,11 +256,12 @@ h2 {
   display: grid;
   grid-template-columns: repeat(8, 1fr);
   grid-template-rows: repeat(8, 1fr);
+  width: 100%;
+  height: 100%;
   overflow: hidden;
   border: 10px solid #31251a;
   border-radius: 24px;
   background: #31251a;
-  aspect-ratio: 1;
 }
 
 .square {
@@ -328,15 +348,20 @@ h2 {
 .file-labels {
   grid-column: 2;
   grid-template-columns: repeat(8, 1fr);
+  align-items: center;
+  line-height: 1;
   text-align: center;
 }
 
 .side-panel {
   display: grid;
   gap: 1rem;
-  grid-template-rows: auto minmax(0, 1fr) minmax(120px, 180px);
+  grid-template-rows: auto minmax(240px, 1fr);
   max-height: calc(100vh - 122px);
   min-height: 0;
+  position: relative;
+  z-index: 5;
+  width: 300px;
 }
 
 .panel-card {
@@ -360,27 +385,6 @@ h2 {
   letter-spacing: 0.03em;
 }
 
-.coach-log {
-  display: grid;
-  align-content: start;
-  gap: 0.75rem;
-  height: 100%;
-  max-height: none;
-  overflow: auto;
-  padding-right: 0.15rem;
-}
-
-.coach-log p {
-  margin: 0;
-  padding: 0.8rem;
-  border-radius: 18px;
-  background: rgba(244, 234, 216, 0.07);
-}
-
-.coach-log strong {
-  color: #f5d58e;
-}
-
 .move-card ol {
   display: grid;
   align-content: start;
@@ -391,11 +395,6 @@ h2 {
   padding: 0;
   overflow: auto;
   list-style: none;
-}
-
-.coach-card-panel {
-  display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
 }
 
 .move-card {
@@ -424,6 +423,60 @@ h2 {
 
 .move-card strong {
   color: var(--cream);
+}
+
+.chat-drawer {
+  position: fixed;
+  right: 1.25rem;
+  bottom: 1.25rem;
+  z-index: 40;
+  width: min(340px, calc(100vw - 2rem));
+  border: 1px solid var(--panel-border);
+  border-radius: 24px;
+  padding: 1rem;
+  background: rgba(17, 18, 15, 0.94);
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(18px);
+}
+
+.chat-drawer-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.75rem;
+}
+
+.chat-drawer-header strong {
+  color: var(--cream);
+  font-family: "Trebuchet MS", sans-serif;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.chat-drawer-header button {
+  border: 1px solid var(--panel-border);
+  border-radius: 999px;
+  padding: 0.35rem 0.65rem;
+  background: rgba(244, 234, 216, 0.08);
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 0.75rem;
+}
+
+.chat-drawer textarea {
+  width: 100%;
+  min-height: 86px;
+  resize: none;
+  border: 1px solid rgba(244, 234, 216, 0.12);
+  border-radius: 16px;
+  padding: 0.75rem;
+  outline: none;
+  background: rgba(244, 234, 216, 0.07);
+  color: var(--cream);
+}
+
+.chat-drawer textarea::placeholder {
+  color: rgba(244, 234, 216, 0.36);
 }
 
 .menu-screen,
@@ -560,7 +613,10 @@ h2 {
 
 @media (max-width: 1120px) {
   .app-shell {
-    grid-template-columns: minmax(250px, 320px) minmax(330px, 1fr);
+    grid-template-columns: 300px minmax(360px, 1fr);
+    width: min(100%, 980px);
+    max-width: calc(100vw - 32px);
+    padding-inline: 0;
   }
 
   .coach-card {
@@ -573,9 +629,10 @@ h2 {
 
   .side-panel {
     grid-column: 1 / -1;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     grid-template-rows: none;
     max-height: none;
+    width: auto;
   }
 }
 
@@ -596,11 +653,13 @@ h2 {
 
   .side-panel {
     grid-template-columns: 1fr;
+    width: auto;
   }
 
   .board-wrap {
-    grid-template-columns: 1.1rem minmax(280px, calc(100vw - 4.6rem));
-    grid-template-rows: minmax(280px, calc(100vw - 4.6rem)) 1.1rem;
+    --board-size: min(72vmin, calc(100vw - 4.6rem));
+    grid-template-columns: 1.1rem var(--board-size);
+    grid-template-rows: var(--board-size) 0.8rem;
     width: 100%;
     border-radius: 24px;
   }
@@ -611,14 +670,14 @@ h2 {
   }
 
   .coach-card {
-    width: 224px;
-    min-height: 324px;
+    width: 300px;
+    min-height: 430px;
     border-radius: 22px;
   }
 
   .character-window {
-    height: 272px;
-    flex-basis: 272px;
+    height: 370px;
+    flex-basis: 370px;
   }
 }
 
@@ -628,9 +687,10 @@ h2 {
   }
 
   .board-wrap {
+    --board-size: calc(100vw - 3.2rem);
     padding: 0.55rem;
-    grid-template-columns: 0.85rem minmax(250px, calc(100vw - 3.2rem));
-    grid-template-rows: minmax(250px, calc(100vw - 3.2rem)) 0.85rem;
+    grid-template-columns: 0.85rem var(--board-size);
+    grid-template-rows: var(--board-size) 0.7rem;
   }
 
   .rank-labels,

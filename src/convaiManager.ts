@@ -24,6 +24,7 @@ class ChessConvaiManager {
   private isSpeaking = false;
   private streamBuffer = '';
   private lastEmittedText = '';
+  private longestResponseText = '';
   private hasFlushed = false;
   private unsubFns: Array<() => void> = [];
   private responseListeners = new Set<ResponseListener>();
@@ -74,22 +75,9 @@ class ChessConvaiManager {
           }
           if (type === 'bot-llm-text' && content) {
             this.streamBuffer = content;
-            if (this.streamDebounce) clearTimeout(this.streamDebounce);
-            this.streamDebounce = setTimeout(() => this.flushStream(), 800);
-          }
-        }),
-      );
-
-      this.unsubFns.push(
-        client.on('messagesChange', (messages: any[]) => {
-          if (!Array.isArray(messages) || messages.length === 0) return;
-          for (let i = messages.length - 1; i >= 0; i--) {
-            const msg = messages[i];
-            if (msg?.type === 'bot-llm-text' && typeof msg.content === 'string' && msg.content.trim()) {
-              this.streamBuffer = msg.content;
-              if (this.streamDebounce) clearTimeout(this.streamDebounce);
-              this.streamDebounce = setTimeout(() => this.flushStream(), 800);
-              break;
+            this.lastEmittedText = content;
+            if (content.length > this.longestResponseText.length) {
+              this.longestResponseText = content;
             }
           }
         }),
@@ -181,7 +169,7 @@ class ChessConvaiManager {
 
   async speakCoachMessage(message: string, dynamicInfo: string): Promise<string> {
     return this.runExclusiveSpeech(async () => {
-      await this.waitForSilence('Danielle turn preflight');
+      await this.waitForSilence('Danielle turn preflight', 350, 3000);
       let response = await this.sendAndAwaitSpeech(message, dynamicInfo);
       if (!response.trim()) {
         debugLog('Convai', '[Danielle] Empty speech response, reconnecting and retrying once');
@@ -191,6 +179,13 @@ class ChessConvaiManager {
       }
       return response;
     });
+  }
+
+  async sendUserChat(message: string, dynamicInfo: string): Promise<string> {
+    return this.speakCoachMessage(
+      `The player sent this chat message: "${message}". Reply as Danielle in one short, meaningful sentence under 18 words. Stay in the current chess lesson. Do not say chess notation, square names, file-rank names, or SAN aloud; translate them into natural language.`,
+      dynamicInfo,
+    );
   }
 
   getLipsyncFrame(): Float32Array | null {
@@ -266,10 +261,13 @@ class ChessConvaiManager {
   }
 
   private async sendAndAwaitSpeech(message: string, dynamicInfo: string): Promise<string> {
+    const startedAt = performance.now();
     await this.connect();
+    debugLog('Convai', `[Danielle] connect/ready gate start: ${(performance.now() - startedAt).toFixed(1)}ms`);
     if (!this.client || !this.connected) return '';
 
-    await this.waitForReady(6000);
+    await this.waitForReady(2500);
+    debugLog('Convai', `[Danielle] ready wait done: ${(performance.now() - startedAt).toFixed(1)}ms`);
     if (!this.botReady) {
       debugLog('Convai', '[Danielle] BOT READY still pending, sending on connected client');
     }
@@ -277,12 +275,13 @@ class ChessConvaiManager {
     this.client.updateDynamicInfo({ text: dynamicInfo });
     this.lastEmittedText = '';
     this.streamBuffer = '';
+    this.longestResponseText = '';
     this.hasFlushed = false;
 
     debugLog('Convai', `[Danielle] Speaking: "${message.slice(0, 100)}"`);
     this.client.sendUserTextMessage(message);
     const response = await this.waitForResponseCompletion();
-    debugLog('Convai', `[Danielle] Speech done. Response: "${response.slice(0, 100)}"`);
+    debugLog('Convai', `[Danielle] Speech done after ${(performance.now() - startedAt).toFixed(1)}ms. Response: "${response.slice(0, 100)}"`);
     return response;
   }
 
@@ -299,40 +298,59 @@ class ChessConvaiManager {
 
     if (this.isSpeaking || everSpoke) {
       let silentMs = 0;
-      for (let i = 0; i < 80; i++) {
+      for (let i = 0; i < 60; i++) {
         await this.sleep(500);
         if (!this.isSpeaking) {
           silentMs += 500;
-          if (silentMs >= 1500) break;
+          if (silentMs >= 700) break;
         } else {
           silentMs = 0;
         }
       }
-      await this.sleep(500);
+      await this.sleep(150);
     } else if (this.lastEmittedText) {
-      await this.sleep(3000);
+      await this.sleep(700);
     }
 
     this.lastSpeechEndedAt = Date.now();
-    this.flushStream();
-    await this.waitForSilence('Danielle post-speech', 1000, 5000);
-    return this.lastEmittedText || '';
+    this.captureLatestText();
+    await this.waitForSilence('Danielle post-speech', 250, 1500);
+    return this.getBestResponseText();
   }
 
-  private flushStream(): void {
+  private captureLatestText(): void {
     if (this.streamDebounce) {
       clearTimeout(this.streamDebounce);
       this.streamDebounce = null;
     }
-    if (!this.streamBuffer || this.hasFlushed) return;
+    if (!this.streamBuffer) return;
     const text = this.streamBuffer;
     this.lastEmittedText = text;
+    if (text.length > this.longestResponseText.length) {
+      this.longestResponseText = text;
+    }
     this.streamBuffer = '';
     this.hasFlushed = true;
-    debugLog('Convai', `[Danielle] FINAL: "${text.slice(0, 100)}"`);
+    debugLog('Convai', `[Danielle] FINAL: "${text.slice(0, 180)}"`);
+  }
+
+  private flushStream(): void {
+    this.captureLatestText();
+    const text = this.getBestResponseText();
+    if (!text) return;
     for (const listener of this.responseListeners) {
       listener({ characterName: DANIELLE.name, text });
     }
+  }
+
+  private getBestResponseText(): string {
+    const latest = this.lastEmittedText.trim();
+    const longest = this.longestResponseText.trim();
+    if (!latest) return longest;
+    if (!longest) return latest;
+    if (longest.includes(latest)) return longest;
+    if (latest.includes(longest)) return latest;
+    return latest.length >= longest.length ? latest : longest;
   }
 
   private runExclusiveSpeech<T>(task: () => Promise<T>): Promise<T> {
