@@ -3,8 +3,12 @@ import { Canvas } from '@react-three/fiber';
 import { useGLTF } from '@react-three/drei';
 import ReallusionCharacter from './ReallusionCharacter';
 
-const DANIELLE_MODEL = `${import.meta.env.BASE_URL}danielle.glb`;
-const DANIELLE_IDLE = `${import.meta.env.BASE_URL}danielle-idle.glb`;
+const DEFAULT_CHARACTER_ASSET_BASE = 'https://huggingface.co/sponge/Orca/resolve/main/';
+const CHARACTER_ASSET_BASE = import.meta.env.VITE_CHARACTER_ASSET_BASE_URL || DEFAULT_CHARACTER_ASSET_BASE;
+const assetUrl = (fileName: string) => `${CHARACTER_ASSET_BASE.replace(/\/?$/, '/')}${fileName}`;
+
+const DANIELLE_MODEL = assetUrl('danielle.glb');
+const DANIELLE_IDLE = assetUrl('danielle-idle.glb');
 const DANIELLE_BG = '#d4dce8';
 
 useGLTF.preload(DANIELLE_MODEL);
