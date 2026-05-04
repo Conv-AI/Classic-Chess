@@ -1,8 +1,10 @@
+import { COACHES, type CoachConfig, type CoachId } from './coachConfig';
 import { debugLog } from './debugLog';
 
 const API_KEY = import.meta.env.VITE_CONVAI_API_KEY as string;
 
 export type ConvaiResponse = {
+  coachId: CoachId;
   characterName: string;
   text: string;
 };
@@ -10,55 +12,89 @@ export type ConvaiResponse = {
 type ResponseListener = (response: ConvaiResponse) => void;
 type StatusListener = (status: ReturnType<ChessConvaiManager['getStatus']>) => void;
 
-const DANIELLE = {
-  name: 'Danielle',
-  characterId: '468a8ac4-2879-11f1-a19f-42010a7be02c',
+type CoachConnection = {
+  coach: CoachConfig;
+  client: any;
+  audioRenderer: any;
+  connected: boolean;
+  connecting: boolean;
+  botReady: boolean;
+  isSpeaking: boolean;
+  streamBuffer: string;
+  lastEmittedText: string;
+  longestResponseText: string;
+  hasFlushed: boolean;
+  unsubFns: Array<() => void>;
+  lipsyncIndex: number;
+  lipsyncLastTime: number;
+  lipsyncAccum: number;
+  lipsyncActive: boolean;
+  lastConversationId: number;
 };
 
+function createConnection(coach: CoachConfig): CoachConnection {
+  return {
+    coach,
+    client: null,
+    audioRenderer: null,
+    connected: false,
+    connecting: false,
+    botReady: false,
+    isSpeaking: false,
+    streamBuffer: '',
+    lastEmittedText: '',
+    longestResponseText: '',
+    hasFlushed: false,
+    unsubFns: [],
+    lipsyncIndex: 0,
+    lipsyncLastTime: 0,
+    lipsyncAccum: 0,
+    lipsyncActive: false,
+    lastConversationId: -1,
+  };
+}
+
 class ChessConvaiManager {
-  private client: any = null;
-  private audioRenderer: any = null;
-  private connected = false;
-  private connecting = false;
-  private botReady = false;
-  private isSpeaking = false;
-  private streamBuffer = '';
-  private lastEmittedText = '';
-  private longestResponseText = '';
-  private hasFlushed = false;
-  private unsubFns: Array<() => void> = [];
+  private pool = new Map<CoachId, CoachConnection>();
+  private activeCoachId: CoachId = 'arjun';
+  private speakingCoachId: CoachId | '' = '';
   private responseListeners = new Set<ResponseListener>();
   private statusListeners = new Set<StatusListener>();
-  private streamDebounce: ReturnType<typeof setTimeout> | null = null;
-  private lipsyncIndex = 0;
-  private lipsyncLastTime = 0;
-  private lipsyncAccum = 0;
-  private lipsyncActive = false;
-  private lastConversationId = -1;
   private speechQueue: Promise<void> = Promise.resolve();
+  private streamDebounce: ReturnType<typeof setTimeout> | null = null;
   private lastSpeechEndedAt = 0;
 
-  async connect(): Promise<void> {
-    if (this.connecting || this.connected) {
-      await this.waitForReady(12000);
+  constructor() {
+    for (const coach of COACHES) this.pool.set(coach.id, createConnection(coach));
+  }
+
+  async connectCoach(coach: CoachConfig): Promise<void> {
+    this.activeCoachId = coach.id;
+    const conn = this.pool.get(coach.id);
+    if (!conn) return;
+    await this.disconnectOtherCoaches(coach.id);
+    if (conn.connecting || conn.connected) {
+      await this.waitForReady(conn, 12000);
+      this.emitStatus();
       return;
     }
     if (!API_KEY) {
-      debugLog('Convai', '[Danielle] Missing VITE_CONVAI_API_KEY');
+      debugLog('Convai', `[${coach.name}] Missing VITE_CONVAI_API_KEY`);
+      this.emitStatus();
       return;
     }
 
-    this.connecting = true;
+    conn.connecting = true;
     this.emitStatus();
 
     try {
-      debugLog('Convai', `[Danielle] Connecting (${DANIELLE.characterId})...`);
+      debugLog('Convai', `[${coach.name}] Connecting (${coach.characterId})...`);
       const sdk = await import('@convai/web-sdk/vanilla');
       const { ConvaiClient, AudioRenderer } = sdk;
 
       const client = new ConvaiClient({
         apiKey: API_KEY,
-        characterId: DANIELLE.characterId,
+        characterId: coach.characterId,
         enableLipsync: true,
         enableEmotion: true,
         blendshapeConfig: { format: 'arkit' },
@@ -66,74 +102,76 @@ class ChessConvaiManager {
         startWithAudioOn: false,
       });
 
-      this.unsubFns.push(
+      conn.unsubFns.push(
         client.on('message', (msg: any) => {
           const type: string = msg?.type ?? 'unknown';
           const content: string = msg?.content ?? '';
           if (type !== 'bot-llm-text') {
-            debugLog('Convai', `[Danielle] MSG type="${type}" content="${String(content).slice(0, 80)}"`);
+            debugLog('Convai', `[${coach.name}] MSG type="${type}" content="${String(content).slice(0, 80)}"`);
           }
           if (type === 'bot-llm-text' && content) {
-            this.streamBuffer = content;
-            this.lastEmittedText = content;
-            if (content.length > this.longestResponseText.length) {
-              this.longestResponseText = content;
-            }
+            conn.streamBuffer = content;
+            conn.lastEmittedText = content;
+            if (content.length > conn.longestResponseText.length) conn.longestResponseText = content;
+            if (this.streamDebounce) clearTimeout(this.streamDebounce);
+            this.streamDebounce = setTimeout(() => this.flushStream(conn), 800);
           }
         }),
       );
 
-      this.unsubFns.push(
+      conn.unsubFns.push(
         client.on('stateChange', (sdkState: any) => {
-          const wasSpeaking = this.isSpeaking;
-          this.isSpeaking = Boolean(sdkState.isSpeaking);
-          this.emitStatus();
+          const wasSpeaking = conn.isSpeaking;
+          conn.isSpeaking = Boolean(sdkState.isSpeaking);
 
-          if (this.isSpeaking && !wasSpeaking) {
-            this.lipsyncActive = true;
+          if (conn.isSpeaking && !wasSpeaking) {
+            conn.lipsyncActive = true;
+            this.speakingCoachId = conn.coach.id;
+            this.lastSpeechEndedAt = 0;
             const conversationId = client.conversationSessionId ?? 0;
-            if (conversationId !== this.lastConversationId) {
-              this.lipsyncIndex = 0;
-              this.lipsyncAccum = 0;
-              this.lipsyncLastTime = 0;
-              this.lastConversationId = conversationId;
+            if (conversationId !== conn.lastConversationId) {
+              conn.lipsyncIndex = 0;
+              conn.lipsyncAccum = 0;
+              conn.lipsyncLastTime = 0;
+              conn.lastConversationId = conversationId;
             }
           }
 
-          if (wasSpeaking && !this.isSpeaking) {
-            this.flushStream();
+          if (wasSpeaking && !conn.isSpeaking) {
+            this.flushStream(conn);
             setTimeout(() => {
-              if (!this.isSpeaking) {
-                this.lipsyncActive = false;
+              if (!conn.isSpeaking) {
+                conn.lipsyncActive = false;
                 this.lastSpeechEndedAt = Date.now();
+                if (this.speakingCoachId === conn.coach.id) this.speakingCoachId = '';
                 this.emitStatus();
               }
             }, 500);
           }
+
+          this.emitStatus();
         }),
       );
 
-      this.unsubFns.push(client.on('botReady', () => {
-        debugLog('Convai', '[Danielle] BOT READY');
-        this.botReady = true;
+      conn.unsubFns.push(client.on('botReady', () => {
+        conn.botReady = true;
+        debugLog('Convai', `[${coach.name}] BOT READY`);
         this.emitStatus();
       }));
 
-      this.unsubFns.push(client.on('error', (err: any) => {
-        debugLog('Convai', '[Danielle] error:', err?.message || err);
+      conn.unsubFns.push(client.on('error', (err: any) => {
+        debugLog('Convai', `[${coach.name}] error:`, err?.message || err);
       }));
 
       await client.connect();
-      this.client = client;
-      this.connected = true;
-      debugLog('Convai', '[Danielle] Connected!');
-      this.emitStatus();
+      conn.client = client;
+      conn.connected = true;
 
       try {
-        this.audioRenderer = new AudioRenderer(client.room);
-        debugLog('Convai', '[Danielle] AudioRenderer created');
+        conn.audioRenderer = new AudioRenderer(client.room);
+        debugLog('Convai', `[${coach.name}] AudioRenderer created`);
       } catch (err) {
-        debugLog('Convai', '[Danielle] AudioRenderer failed:', err);
+        debugLog('Convai', `[${coach.name}] AudioRenderer failed:`, err);
       }
 
       setTimeout(() => {
@@ -142,11 +180,11 @@ class ChessConvaiManager {
         });
       }, 1500);
 
-      await this.waitForReady(20000);
+      await this.waitForReady(conn, 20000);
     } catch (err) {
-      debugLog('Convai', '[Danielle] Connection failed:', err);
+      debugLog('Convai', `[${coach.name}] Connection failed:`, err);
     } finally {
-      this.connecting = false;
+      conn.connecting = false;
       this.emitStatus();
     }
   }
@@ -167,63 +205,90 @@ class ChessConvaiManager {
     } catch {}
   }
 
-  async speakCoachMessage(message: string, dynamicInfo: string): Promise<string> {
+  async speakCoachMessage(coach: CoachConfig, message: string, dynamicInfo: string): Promise<string> {
     return this.runExclusiveSpeech(async () => {
-      await this.waitForSilence('Danielle turn preflight', 350, 3000);
-      let response = await this.sendAndAwaitSpeech(message, dynamicInfo);
+      this.activeCoachId = coach.id;
+      await this.connectCoach(coach);
+      await this.waitForGlobalSilence(`${coach.name} turn preflight`, 300, 3000);
+      let response = await this.sendAndAwaitSpeech(coach, message, dynamicInfo);
       if (!response.trim()) {
-        debugLog('Convai', '[Danielle] Empty speech response, reconnecting and retrying once');
-        await this.disconnect();
-        await this.connect();
-        response = await this.sendAndAwaitSpeech(message, dynamicInfo);
+        const conn = this.pool.get(coach.id);
+        if (conn) {
+          debugLog('Convai', `[${coach.name}] Empty response, reconnecting once`);
+          await this.disconnectOne(conn);
+          await this.connectCoach(coach);
+          response = await this.sendAndAwaitSpeech(coach, message, dynamicInfo);
+        }
       }
       return response;
     });
   }
 
-  async sendUserChat(message: string, dynamicInfo: string): Promise<string> {
+  async sendUserChat(coach: CoachConfig, message: string, dynamicInfo: string): Promise<string> {
     return this.speakCoachMessage(
-      `The player sent this chat message: "${message}". Reply as Danielle in one short, meaningful sentence under 18 words. Stay in the current chess lesson. Do not say chess notation, square names, file-rank names, or SAN aloud; translate them into natural language.`,
+      coach,
+      [
+        `The player sent this chat message: "${message}".`,
+        `Reply as ${coach.name}, their chess coach, in one useful sentence under 22 words.`,
+        coach.promptStyle,
+        'Stay grounded in the current chess position. Avoid raw SAN, file-rank square names, and notation aloud.',
+      ].join(' '),
       dynamicInfo,
     );
   }
 
-  getLipsyncFrame(): Float32Array | null {
-    if (!this.client || !this.lipsyncActive) return null;
-    const queue = this.client.blendshapeQueue;
+  getLipsyncFrame(coachId: CoachId): Float32Array | null {
+    const conn = this.pool.get(coachId);
+    if (!conn?.client || !conn.lipsyncActive) return null;
+    if (this.speakingCoachId && this.speakingCoachId !== coachId) return null;
+    const queue = conn.client.blendshapeQueue;
     if (!queue) return null;
 
     const now = performance.now();
-    if (this.lipsyncLastTime > 0) {
-      this.lipsyncAccum += ((now - this.lipsyncLastTime) / 1000) * 60;
+    if (conn.lipsyncLastTime > 0) {
+      conn.lipsyncAccum += ((now - conn.lipsyncLastTime) / 1000) * 60;
     }
-    this.lipsyncLastTime = now;
+    conn.lipsyncLastTime = now;
 
     let frame: Float32Array | null = null;
-    while (this.lipsyncAccum >= 1) {
-      const next = queue.getFrame(this.lipsyncIndex);
+    while (conn.lipsyncAccum >= 1) {
+      const next = queue.getFrame(conn.lipsyncIndex);
       if (next) {
         frame = next;
-        this.lipsyncIndex++;
-        this.lipsyncAccum -= 1;
+        conn.lipsyncIndex++;
+        conn.lipsyncAccum -= 1;
       } else {
-        this.lipsyncAccum = 0;
+        conn.lipsyncAccum = 0;
         break;
       }
     }
     return frame;
   }
 
-  getIsSpeaking(): boolean {
-    return this.isSpeaking;
+  getIsSpeaking(coachId?: CoachId): boolean {
+    if (coachId) return Boolean(this.pool.get(coachId)?.isSpeaking);
+    for (const conn of this.pool.values()) if (conn.isSpeaking) return true;
+    return false;
   }
 
   getStatus() {
+    const active = this.pool.get(this.activeCoachId);
+    const coaches: Record<string, { connected: boolean; botReady: boolean; connecting: boolean; speaking: boolean }> = {};
+    for (const [id, conn] of this.pool) {
+      coaches[id] = {
+        connected: conn.connected,
+        botReady: conn.botReady,
+        connecting: conn.connecting,
+        speaking: conn.isSpeaking,
+      };
+    }
     return {
-      connected: this.connected,
-      botReady: this.botReady,
-      connecting: this.connecting,
-      speaking: this.isSpeaking,
+      activeCoachId: this.activeCoachId,
+      connected: Boolean(active?.connected),
+      botReady: Boolean(active?.botReady),
+      connecting: Boolean(active?.connecting),
+      speaking: Boolean(active?.isSpeaking),
+      coaches,
     };
   }
 
@@ -238,114 +303,86 @@ class ChessConvaiManager {
     return () => this.statusListeners.delete(listener);
   }
 
-  async disconnect(): Promise<void> {
-    for (const unsub of this.unsubFns) {
-      try { unsub(); } catch {}
-    }
-    this.unsubFns = [];
-    if (this.audioRenderer) {
-      try { this.audioRenderer.destroy(); } catch {}
-      this.audioRenderer = null;
-    }
-    if (this.client) {
-      try { await this.client.disconnect(); } catch {}
-      this.client = null;
-    }
-    this.connected = false;
-    this.botReady = false;
-    this.isSpeaking = false;
-    this.lipsyncActive = false;
-    this.streamBuffer = '';
-    this.lastEmittedText = '';
-    this.emitStatus();
-  }
+  private async sendAndAwaitSpeech(coach: CoachConfig, message: string, dynamicInfo: string): Promise<string> {
+    const conn = this.pool.get(coach.id);
+    if (!conn?.client || !conn.connected) return '';
 
-  private async sendAndAwaitSpeech(message: string, dynamicInfo: string): Promise<string> {
-    const startedAt = performance.now();
-    await this.connect();
-    debugLog('Convai', `[Danielle] connect/ready gate start: ${(performance.now() - startedAt).toFixed(1)}ms`);
-    if (!this.client || !this.connected) return '';
+    await this.waitForReady(conn, 2500);
+    if (!conn.botReady) debugLog('Convai', `[${coach.name}] BOT READY still pending; sending anyway`);
 
-    await this.waitForReady(2500);
-    debugLog('Convai', `[Danielle] ready wait done: ${(performance.now() - startedAt).toFixed(1)}ms`);
-    if (!this.botReady) {
-      debugLog('Convai', '[Danielle] BOT READY still pending, sending on connected client');
-    }
+    conn.client.updateDynamicInfo({ text: dynamicInfo });
+    conn.lastEmittedText = '';
+    conn.streamBuffer = '';
+    conn.longestResponseText = '';
+    conn.hasFlushed = false;
+    this.activeCoachId = coach.id;
 
-    this.client.updateDynamicInfo({ text: dynamicInfo });
-    this.lastEmittedText = '';
-    this.streamBuffer = '';
-    this.longestResponseText = '';
-    this.hasFlushed = false;
-
-    debugLog('Convai', `[Danielle] Speaking: "${message.slice(0, 100)}"`);
-    this.client.sendUserTextMessage(message);
-    const response = await this.waitForResponseCompletion();
-    debugLog('Convai', `[Danielle] Speech done after ${(performance.now() - startedAt).toFixed(1)}ms. Response: "${response.slice(0, 100)}"`);
+    debugLog('Convai', `[${coach.name}] Speaking: "${message.slice(0, 100)}"`);
+    conn.client.sendUserTextMessage(message);
+    const response = await this.waitForResponseCompletion(conn);
+    debugLog('Convai', `[${coach.name}] Speech done. Response: "${response.slice(0, 100)}"`);
     return response;
   }
 
-  private async waitForResponseCompletion(): Promise<string> {
+  private async waitForResponseCompletion(conn: CoachConnection): Promise<string> {
     let everSpoke = false;
     for (let i = 0; i < 30; i++) {
       await this.sleep(500);
-      if (this.isSpeaking) {
+      if (conn.isSpeaking) {
         everSpoke = true;
         break;
       }
-      if (this.lastEmittedText) break;
+      if (conn.lastEmittedText) break;
     }
 
-    if (this.isSpeaking || everSpoke) {
+    if (conn.isSpeaking || everSpoke) {
       let silentMs = 0;
-      for (let i = 0; i < 60; i++) {
+      for (let i = 0; i < 70; i++) {
         await this.sleep(500);
-        if (!this.isSpeaking) {
+        if (!conn.isSpeaking) {
           silentMs += 500;
-          if (silentMs >= 700) break;
+          if (silentMs >= 900) break;
         } else {
           silentMs = 0;
         }
       }
       await this.sleep(150);
-    } else if (this.lastEmittedText) {
+    } else if (conn.lastEmittedText) {
       await this.sleep(700);
     }
 
     this.lastSpeechEndedAt = Date.now();
-    this.captureLatestText();
-    await this.waitForSilence('Danielle post-speech', 250, 1500);
-    return this.getBestResponseText();
+    this.captureLatestText(conn);
+    await this.waitForGlobalSilence(`${conn.coach.name} post-speech`, 250, 1500);
+    return this.getBestResponseText(conn);
   }
 
-  private captureLatestText(): void {
+  private captureLatestText(conn: CoachConnection): void {
     if (this.streamDebounce) {
       clearTimeout(this.streamDebounce);
       this.streamDebounce = null;
     }
-    if (!this.streamBuffer) return;
-    const text = this.streamBuffer;
-    this.lastEmittedText = text;
-    if (text.length > this.longestResponseText.length) {
-      this.longestResponseText = text;
-    }
-    this.streamBuffer = '';
-    this.hasFlushed = true;
-    debugLog('Convai', `[Danielle] FINAL: "${text.slice(0, 180)}"`);
+    if (!conn.streamBuffer) return;
+    const text = conn.streamBuffer;
+    conn.lastEmittedText = text;
+    if (text.length > conn.longestResponseText.length) conn.longestResponseText = text;
+    conn.streamBuffer = '';
+    conn.hasFlushed = true;
+    debugLog('Convai', `[${conn.coach.name}] FINAL: "${text.slice(0, 180)}"`);
   }
 
-  private flushStream(): void {
-    this.captureLatestText();
-    const text = this.getBestResponseText();
+  private flushStream(conn: CoachConnection): void {
+    this.captureLatestText(conn);
+    const text = this.getBestResponseText(conn);
     if (!text) return;
     for (const listener of this.responseListeners) {
-      listener({ characterName: DANIELLE.name, text });
+      listener({ coachId: conn.coach.id, characterName: conn.coach.name, text });
     }
   }
 
-  private getBestResponseText(): string {
-    const latest = this.lastEmittedText.trim();
-    const longest = this.longestResponseText.trim();
+  private getBestResponseText(conn: CoachConnection): string {
+    const latest = conn.lastEmittedText.trim();
+    const longest = conn.longestResponseText.trim();
     if (!latest) return longest;
     if (!longest) return latest;
     if (longest.includes(latest)) return longest;
@@ -370,21 +407,54 @@ class ChessConvaiManager {
     })();
   }
 
-  private async waitForSilence(context: string, minQuietMs = 1200, maxWaitMs = 15000): Promise<void> {
+  private async waitForGlobalSilence(context: string, minQuietMs = 900, maxWaitMs = 15000): Promise<void> {
     const start = Date.now();
     while (Date.now() - start < maxWaitMs) {
       const quietFor = this.lastSpeechEndedAt === 0 ? minQuietMs : Date.now() - this.lastSpeechEndedAt;
-      if (!this.isSpeaking && quietFor >= minQuietMs) return;
+      if (!this.getIsSpeaking() && quietFor >= minQuietMs) return;
       await this.sleep(150);
     }
     debugLog('Convai', `[${context}] Silence gate timed out, continuing`);
   }
 
-  private async waitForReady(maxWaitMs: number): Promise<void> {
+  private async waitForReady(conn: CoachConnection, maxWaitMs: number): Promise<void> {
     const start = Date.now();
-    while (!this.botReady && Date.now() - start < maxWaitMs) {
+    while (!conn.botReady && Date.now() - start < maxWaitMs) {
       await this.sleep(500);
     }
+  }
+
+  private async disconnectOne(conn: CoachConnection): Promise<void> {
+    for (const unsub of conn.unsubFns) {
+      try { unsub(); } catch {}
+    }
+    conn.unsubFns = [];
+    if (conn.audioRenderer) {
+      try { conn.audioRenderer.destroy(); } catch {}
+      conn.audioRenderer = null;
+    }
+    if (conn.client) {
+      try { await conn.client.disconnect(); } catch {}
+      conn.client = null;
+    }
+    conn.connected = false;
+    conn.botReady = false;
+    conn.isSpeaking = false;
+    conn.lipsyncActive = false;
+    conn.streamBuffer = '';
+    conn.lastEmittedText = '';
+    conn.longestResponseText = '';
+    this.emitStatus();
+  }
+
+  private async disconnectOtherCoaches(activeCoachId: CoachId): Promise<void> {
+    const disconnects: Array<Promise<void>> = [];
+    for (const [coachId, conn] of this.pool) {
+      if (coachId === activeCoachId) continue;
+      if (!conn.connected && !conn.connecting && !conn.client) continue;
+      disconnects.push(this.disconnectOne(conn));
+    }
+    await Promise.all(disconnects);
   }
 
   private emitStatus(): void {

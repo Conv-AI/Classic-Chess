@@ -116,7 +116,7 @@ export function legalTargets(fen: string, square: Square) {
   return game.moves({ square, verbose: true }).map((move) => move.to);
 }
 
-export function buildDynamicCoachInfo(game: Chess, plannedMove?: Move | null, lastMove?: Move | null) {
+export function buildDynamicCoachInfo(game: Chess, plannedMove?: Move | null, lastMove?: Move | null, coachName = 'Coach') {
   const turn = game.turn() === 'w' ? 'White to move' : 'Black to move';
   const status = game.isCheckmate()
     ? 'checkmate'
@@ -128,7 +128,7 @@ export function buildDynamicCoachInfo(game: Chess, plannedMove?: Move | null, la
   const legalMoveCount = game.moves().length;
   const material = materialSummary(game);
   const lastMoveInfo = lastMove ? describeLastMove(lastMove) : 'No move has been played yet.';
-  const moveHint = plannedMove ? `Danielle planned move: ${plannedMove.san} from ${plannedMove.from} to ${plannedMove.to}.` : '';
+  const moveHint = plannedMove ? `${coachName} planned move: ${plannedMove.san} from ${plannedMove.from} to ${plannedMove.to}.` : '';
   return [
     turn,
     `Position status: ${status}.`,
@@ -142,17 +142,17 @@ export function buildDynamicCoachInfo(game: Chess, plannedMove?: Move | null, la
 function materialSummary(game: Chess) {
   const score = materialScore(game);
   if (Math.abs(score) < 100) return 'Material is roughly equal.';
-  const leader = score > 0 ? 'White/player' : 'Black/Danielle';
+  const leader = score > 0 ? 'White/player' : 'Black/coach';
   return `${leader} is ahead by about ${Math.abs(score)} centipawns of material.`;
 }
 
 function describeLastMove(move: Move) {
-  const mover = move.color === 'w' ? 'The player' : 'Danielle';
+  const mover = move.color === 'w' ? 'The player' : 'The coach';
   const piece = pieceName(move.piece);
   const capture = move.captured
     ? move.color === 'w'
-      ? ` The player captured Danielle's ${pieceName(move.captured)}; Danielle should acknowledge losing material if it matters.`
-      : ` Danielle captured the player's ${pieceName(move.captured)}.`
+      ? ` The player captured the coach's ${pieceName(move.captured)}; the coach should acknowledge losing material if it matters.`
+      : ` The coach captured the player's ${pieceName(move.captured)}.`
     : '';
   const check = move.san.includes('+') ? ' The move gave check.' : '';
   const mate = move.san.includes('#') ? ' The move gave checkmate.' : '';

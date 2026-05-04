@@ -1,7 +1,9 @@
+import type { CoachId, DifficultyId } from './coachConfig';
+
 export type Side = 'w' | 'b';
 
 export type CoachMessage = {
-  speaker: 'Danielle' | 'System';
+  speaker: string;
   text: string;
 };
 
@@ -12,5 +14,12 @@ export type MoveRecord = {
   piece: string;
   captured?: string;
   color: 'w' | 'b';
-  by: 'You' | 'Danielle';
+  by: string;
+  fenBefore: string;
+  fenAfter: string;
+};
+
+export type GameSetup = {
+  coachId: CoachId;
+  difficultyId: DifficultyId;
 };

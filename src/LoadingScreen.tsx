@@ -3,13 +3,13 @@ type Props = {
   step: string;
 };
 
-const PIECES = ['♙', '♘', '♗', '♖', '♕'];
+const PIECES = ['\u2659', '\u2658', '\u2657', '\u2656', '\u2655'];
 const LINES = [
   'Polishing the bishops. They insisted.',
   'Teaching the knights to stop jumping to conclusions.',
   'Asking the queen to keep it reasonable. She declined.',
   'Convincing the pawns this is their big character arc.',
-  'Waking Danielle before the rooks start arguing.',
+  'Waking the coaches before the rooks start arguing.',
 ];
 
 export default function LoadingScreen({ progress, step }: Props) {

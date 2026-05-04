@@ -10,13 +10,15 @@ class StockfishEngine {
   private worker: Worker | null = null;
   private readyPromise: Promise<void> | null = null;
   private pending: PendingSearch | null = null;
+  private currentSkill: number | null = null;
 
-  async bestMove(fen: string, moveTimeMs = 700): Promise<Move | null> {
-    if (typeof Worker === 'undefined') return chooseDanielleMove(fen, 1) ?? null;
+  async bestMove(fen: string, moveTimeMs = 700, skillLevel = 12): Promise<Move | null> {
+    if (typeof Worker === 'undefined') return chooseDanielleMove(fen, fallbackDepth(skillLevel)) ?? null;
 
     try {
       const worker = await this.getWorker();
       await this.ensureReady(worker);
+      this.setSkill(worker, skillLevel);
 
       return await new Promise<string | null>((resolve) => {
         if (this.pending) {
@@ -36,11 +38,11 @@ class StockfishEngine {
         worker.postMessage(`go movetime ${moveTimeMs}`);
       }).then((uciMove) => {
         if (uciMove) return this.uciToMove(fen, uciMove);
-        return chooseDanielleMove(fen, 1) ?? null;
+        return chooseDanielleMove(fen, fallbackDepth(skillLevel)) ?? null;
       });
     } catch (err) {
       console.warn('[Stockfish] Falling back to local AI:', err);
-      return chooseDanielleMove(fen, 1) ?? null;
+      return chooseDanielleMove(fen, fallbackDepth(skillLevel)) ?? null;
     }
   }
 
@@ -70,10 +72,21 @@ class StockfishEngine {
       };
       worker.addEventListener('message', listener);
       worker.postMessage('uci');
-      worker.postMessage('setoption name Skill Level value 12');
     });
 
     return this.readyPromise;
+  }
+
+  private setSkill(worker: Worker, skillLevel: number) {
+    const clamped = Math.max(1, Math.min(20, Math.round(skillLevel)));
+    if (this.currentSkill === clamped) return;
+    worker.postMessage(`setoption name Skill Level value ${clamped}`);
+    if (clamped >= 20) {
+      worker.postMessage('setoption name UCI_LimitStrength value false');
+    } else {
+      worker.postMessage('setoption name UCI_LimitStrength value true');
+    }
+    this.currentSkill = clamped;
   }
 
   private handleMessage(line: string) {
@@ -95,6 +108,12 @@ class StockfishEngine {
     });
     return move || null;
   }
+}
+
+function fallbackDepth(skillLevel: number) {
+  if (skillLevel >= 18) return 3;
+  if (skillLevel >= 10) return 2;
+  return 1;
 }
 
 export const stockfishEngine = new StockfishEngine();

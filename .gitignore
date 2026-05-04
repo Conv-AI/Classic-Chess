@@ -6,6 +6,9 @@ dist/
 build/
 
 # Local environment
+.env
+.env.*
+!.env.example
 
 # Logs
 *.log
@@ -26,3 +29,4 @@ public/*.gltf
 public/*.bin
 
 demo/
+docs/prompts.txt
