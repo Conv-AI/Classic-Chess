@@ -1,6 +1,9 @@
+import type { ReactNode } from 'react';
+
 type Props = {
   progress: number;
   step: string;
+  children?: ReactNode;
 };
 
 const PIECES = ['\u2659', '\u2658', '\u2657', '\u2656', '\u2655'];
@@ -12,7 +15,7 @@ const LINES = [
   'Waking the coaches before the rooks start arguing.',
 ];
 
-export default function LoadingScreen({ progress, step }: Props) {
+export default function LoadingScreen({ progress, step, children }: Props) {
   const line = LINES[Math.floor(Date.now() / 3500) % LINES.length];
 
   return (
@@ -30,6 +33,7 @@ export default function LoadingScreen({ progress, step }: Props) {
         <div className="loading-fill" style={{ width: `${progress}%` }} />
       </div>
       <small>{line}</small>
+      {children && <div className="loading-prewarm" aria-hidden="true">{children}</div>}
     </div>
   );
 }

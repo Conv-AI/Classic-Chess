@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Chess, type Move, type Square } from 'chess.js';
+import { ChevronsLeft, ChevronsRight, ChevronLeft, ChevronRight } from 'lucide-react';
 import { analyzeGame } from './analysis';
 import { COACHES, DIFFICULTIES, getCoach, getDifficulty, type CoachId, type DifficultyId } from './coachConfig';
 import { createCustomCoach, fetchLanguages, fetchVoices, hasConvaiApiKey, MODEL_OPTIONS, type LanguageOption, type VoiceOption } from './convaiCoreApi';
-import { buildDynamicCoachInfo, legalTargets } from './chessAi';
+import { buildCoachInstruction, buildDynamicCoachInfo, legalTargets } from './chessAi';
 import { chessConvai } from './convaiManager';
+import { debugLog } from './debugLog';
 import CoachCard from './DanielleCoach';
 import LoadingScreen from './LoadingScreen';
 import MenuScreen from './MenuScreen';
@@ -41,6 +43,8 @@ function App() {
   const [difficultyId, setDifficultyId] = useState<DifficultyId>('beginner');
   const [loadingProgress, setLoadingProgress] = useState(0);
   const [loadingStep, setLoadingStep] = useState('Setting up the board...');
+  const [prewarmCoachId, setPrewarmCoachId] = useState<CoachId | null>(null);
+  const avatarReadyResolverRef = useRef<(() => void) | null>(null);
   const [sessions, setSessions] = useState<StoredGameSession[]>(() => loadSessions());
   const coach = getCoach(coachId);
 
@@ -61,13 +65,22 @@ function App() {
   }, [coach.name, coachId]);
 
   async function startQuickPlay() {
+    debugLog('App', `startQuickPlay — coach=${coach.id} difficulty=${difficultyId}`);
     chessConvai.unlockAudio();
+    const selectedCoach = coach;
     setScreen('loading');
+    setPrewarmCoachId(selectedCoach.id);
     setLoadingProgress(18);
-    setLoadingStep(`Loading ${coach.name} and the chess room...`);
-    await chessConvai.connectCoach(coach);
+    setLoadingStep(`Loading ${selectedCoach.name} and the chess room...`);
+    const avatarReady = new Promise<void>((resolve) => {
+      avatarReadyResolverRef.current = resolve;
+      window.setTimeout(resolve, 12000);
+    });
+    debugLog('App', `Awaiting connectCoach + avatar prewarm for ${selectedCoach.name}`);
+    await Promise.all([chessConvai.connectCoach(selectedCoach), avatarReady]);
+    debugLog('App', `Coach and avatar ready — transitioning to game`);
     setLoadingProgress(100);
-    setLoadingStep(`${coach.name} is ready.`);
+    setLoadingStep(`${selectedCoach.name} is ready.`);
     window.setTimeout(() => setScreen('game'), 450);
   }
 
@@ -75,7 +88,21 @@ function App() {
     setSessions(loadSessions());
   }
 
-  if (screen === 'loading') return <LoadingScreen progress={loadingProgress} step={loadingStep} />;
+  if (screen === 'loading') {
+    const prewarmCoach = prewarmCoachId ? getCoach(prewarmCoachId) : coach;
+    return (
+      <LoadingScreen progress={loadingProgress} step={loadingStep}>
+        <CoachCard
+          coach={prewarmCoach}
+          status="Preparing portrait..."
+          onReady={() => {
+            avatarReadyResolverRef.current?.();
+            avatarReadyResolverRef.current = null;
+          }}
+        />
+      </LoadingScreen>
+    );
+  }
   if (screen === 'game') {
     return (
       <ChessGame
@@ -257,19 +284,16 @@ function ChessGame({
   async function makeCoachMove(fen: string, playerMove?: Move) {
     const next = new Chess(fen);
     const planned = await stockfishEngine.bestMove(next.fen(), difficulty.moveTimeMs, difficulty.stockfishSkill);
-    const dynamicInfo = buildDynamicCoachInfo(next, planned, playerMove, coach.name);
+    const dynamicInfo = buildDynamicCoachInfo(next, planned, playerMove, coach, difficulty);
     const prompt = planned
       ? [
-        `Speak as ${coach.name}, the player's chess coach.`,
-        'Give exactly one useful sentence under 22 words.',
-        'Focus on what the player just did or the problem they now face.',
-        'Only mention your own reply if it is a capture, sacrifice, check, mate threat, or major turning point.',
+        buildCoachInstruction(coach, difficulty, 'move'),
+        'Explain the current position like a real chess class, not a random reaction.',
+        'Use the private legal reply only as hidden context for my next move; do not say it unless it is truly instructional.',
         `Private legal reply: ${planned.san} from ${planned.from} to ${planned.to}.`,
-        coach.promptStyle,
-        difficulty.commentary,
-        'Do not invent another move. Do not say raw SAN, file-rank square names, or notation aloud.',
+        'Do not invent another move. Do not say raw SAN, file-rank square names, or notation aloud unless a text-only answer requires it.',
       ].join(' ')
-      : `Speak as ${coach.name}, my chess coach. Give one short useful sentence about the current position.`;
+      : `${buildCoachInstruction(coach, difficulty, 'move')} Give a useful chess-class explanation of the current position.`;
 
     const spoken = await chessConvai.speakCoachMessage(coach, prompt, dynamicInfo);
     if (spoken) setCoachLine(spoken);
@@ -294,8 +318,11 @@ function ChessGame({
         setSelected(null);
         return;
       }
+      if (piece?.color === 'w') {
+        setSelected(square);
+        return;
+      }
       if (makePlayerMove(selected, square)) return;
-      if (piece?.color === 'w') setSelected(square);
       return;
     }
     if (piece?.color === 'w') setSelected(square);
@@ -309,13 +336,13 @@ function ChessGame({
     const best = await stockfishEngine.bestMove(game.fen(), 520, Math.max(10, difficulty.stockfishSkill));
     const localHint = buildHintText(nextLevel, best, coach.name);
     setHintText(localHint);
-    const dynamicInfo = buildDynamicCoachInfo(game, best, lastMove ? moveRecordToMoveLike(lastMove) : null, coach.name);
+    const dynamicInfo = buildDynamicCoachInfo(game, best, lastMove ? moveRecordToMoveLike(lastMove) : null, coach, difficulty);
     const prompt = [
-      `Speak as ${coach.name}. The player asked for hint level ${nextLevel} of 3.`,
+      buildCoachInstruction(coach, difficulty, 'hint'),
+      `You asked me for hint level ${nextLevel} of 3.`,
       nextLevel < 3 ? 'Do not reveal the exact move.' : `You may reveal this move naturally: ${best?.san ?? 'the best move'}.`,
-      coach.hintStyle,
       localHint,
-      'Use one short sentence and avoid raw square notation aloud.',
+      'Use 1-2 useful teaching sentences and avoid raw square notation aloud.',
     ].join(' ');
     const spoken = await chessConvai.speakCoachMessage(coach, prompt, dynamicInfo);
     if (spoken) setCoachLine(spoken);
@@ -325,7 +352,12 @@ function ChessGame({
     const text = chatInput.trim();
     if (!text) return;
     setChatInput('');
-    const spoken = await chessConvai.sendUserChat(coach, text, buildDynamicCoachInfo(game, null, lastMove ? moveRecordToMoveLike(lastMove) : null, coach.name));
+    const spoken = await chessConvai.sendUserChat(
+      coach,
+      difficulty,
+      text,
+      buildDynamicCoachInfo(game, null, lastMove ? moveRecordToMoveLike(lastMove) : null, coach, difficulty),
+    );
     if (spoken) setCoachLine(spoken);
   }
 
@@ -463,7 +495,7 @@ function ChessBoard({
 function PuzzleScreen({ coachId, difficultyId, onBack }: { coachId: CoachId; difficultyId: DifficultyId; onBack: () => void }) {
   const coach = getCoach(coachId);
   const filtered = PUZZLES.filter((puzzle) => puzzle.difficultyId === difficultyId);
-  const puzzles = filtered.length ? filtered : PUZZLES;
+  const puzzles = filtered.length >= 3 ? filtered : PUZZLES;
   const [index, setIndex] = useState(0);
   const puzzle = puzzles[index % puzzles.length];
   const [game, setGame] = useState(() => new Chess(puzzle.fen));
@@ -471,18 +503,74 @@ function PuzzleScreen({ coachId, difficultyId, onBack }: { coachId: CoachId; dif
   const [hintsUsed, setHintsUsed] = useState(0);
   const [score, setScore] = useState(0);
   const [streak, setStreak] = useState(0);
-  const [feedback, setFeedback] = useState(`Find the ${puzzle.theme.toLowerCase()} idea.`);
+  const [feedback, setFeedback] = useState('');
+  const [coachReady, setCoachReady] = useState(false);
+  const [avatarReady, setAvatarReady] = useState(false);
+  const [loadingProgress, setLoadingProgress] = useState(10);
+  const [loadingStep, setLoadingStep] = useState(`Loading ${coach.name}...`);
+  const avatarReadyRef = useRef<boolean>(false);
+
+  // Connect Convai coach on mount
+  useEffect(() => {
+    debugLog('PuzzleScreen', `Mounting — connecting coach ${coach.name} (${coach.id})`);
+    chessConvai.unlockAudio();
+    void chessConvai.connectCoach(coach).then(() => {
+      debugLog('PuzzleScreen', `connectCoach resolved for ${coach.name}`);
+    });
+
+    const unsub = chessConvai.onStatus((status) => {
+      if (status.activeCoachId !== coach.id) return;
+      debugLog('PuzzleScreen', `Status update — connecting=${status.connecting} connected=${status.connected} botReady=${status.botReady}`);
+      if (status.botReady) {
+        setLoadingProgress(100);
+        setLoadingStep(`${coach.name} is ready.`);
+        setCoachReady(true);
+      } else if (status.connected) {
+        setLoadingProgress(70);
+        setLoadingStep(`Warming up ${coach.name}...`);
+      } else if (status.connecting) {
+        setLoadingProgress(40);
+        setLoadingStep(`Connecting ${coach.name} to Convai...`);
+      }
+    });
+
+    return () => {
+      debugLog('PuzzleScreen', 'Unmounting — unsubscribing status listener');
+      unsub();
+    };
+  }, [coach]);
+
+  // Listen for AI text responses
+  useEffect(() => {
+    const unsub = chessConvai.onResponse((response) => {
+      if (response.coachId !== coach.id) return;
+      debugLog('PuzzleScreen', `AI response received (${response.text.length} chars): ${response.text.slice(0, 80)}`);
+      setFeedback(response.text);
+    });
+    return unsub;
+  }, [coach.id]);
+
+  const ready = coachReady && avatarReady;
 
   useEffect(() => {
+    debugLog('PuzzleScreen', `Loaded puzzle id="${puzzle.id}" title="${puzzle.title}" sideToMove=${puzzle.sideToMove} solution="${puzzle.solution[0]}" fen="${puzzle.fen}"`);
     setGame(new Chess(puzzle.fen));
     setSelected(null);
     setHintsUsed(0);
-    setFeedback(`Find the ${puzzle.theme.toLowerCase()} idea.`);
+    setFeedback('');
   }, [puzzle]);
 
   const legalMoves = useMemo(() => selected ? legalTargets(game.fen(), selected) : [], [game, selected]);
 
-  function handlePuzzleSquare(square: Square) {
+  function handleAvatarReady() {
+    if (avatarReadyRef.current) return;
+    avatarReadyRef.current = true;
+    debugLog('PuzzleScreen', 'Avatar onReady fired');
+    setAvatarReady(true);
+    setLoadingProgress((p) => Math.max(p, 60));
+  }
+
+  async function handlePuzzleSquare(square: Square) {
     if (game.isGameOver()) return;
     const piece = game.get(square);
     if (selected) {
@@ -490,37 +578,69 @@ function PuzzleScreen({ coachId, difficultyId, onBack }: { coachId: CoachId; dif
         setSelected(null);
         return;
       }
+      if (piece?.color === puzzle.sideToMove) {
+        setSelected(square);
+        return;
+      }
       const next = new Chess(game.fen());
       const move = next.move({ from: selected, to: square, promotion: 'q' });
       if (move) {
-        if (normalizeSan(move.san) === normalizeSan(puzzle.solution[0])) {
-          const earned = puzzleScore(hintsUsed, true);
-          const bonus = hintsUsed === 0 && streak + 1 > 0 && (streak + 1) % 5 === 0 ? 50 : 0;
-          setScore((value) => value + earned + bonus);
-          setStreak((value) => hintsUsed === 0 ? value + 1 : 0);
-          setFeedback(`${coach.name}: Correct. ${puzzle.explanation}${bonus ? ' Streak bonus added.' : ''}`);
+        const normPlayed = normalizeSan(move.san);
+        const normExpected = normalizeSan(puzzle.solution[0]);
+        const correct = normPlayed === normExpected;
+        debugLog('PuzzleScreen', `Move attempted: played="${move.san}" norm="${normPlayed}" expected="${puzzle.solution[0]}" norm="${normExpected}" correct=${correct} puzzle="${puzzle.id}"`);
+        const earned = puzzleScore(hintsUsed, correct);
+        if (correct) {
+          const bonus = hintsUsed === 0 && (streak + 1) % 5 === 0 ? 50 : 0;
+          setScore((v) => v + earned + bonus);
+          setStreak((v) => hintsUsed === 0 ? v + 1 : 0);
+          debugLog('PuzzleScreen', `Correct move — asking coach to explain. bonus=${bonus}`);
+          const prompt = `The student just played the correct move ${move.san} in the puzzle "${puzzle.title}" (theme: ${puzzle.theme}). ${puzzle.explanation} Give a short congratulatory teaching line.`;
+          void chessConvai.speakCoachMessage(coach, prompt, `Puzzle theme: ${puzzle.theme}. Side to move: ${puzzle.sideToMove}.`);
         } else {
           setStreak(0);
-          setFeedback(`${coach.name}: Not quite. The key move was ${puzzle.solution[0]}. ${puzzle.explanation}`);
+          debugLog('PuzzleScreen', `Incorrect move ${move.san} — correct was ${puzzle.solution[0]}`);
+          const prompt = `The student played ${move.san} but the correct move was ${puzzle.solution[0]} in the puzzle "${puzzle.title}" (theme: ${puzzle.theme}). ${puzzle.explanation} Give a brief corrective teaching line.`;
+          void chessConvai.speakCoachMessage(coach, prompt, `Puzzle theme: ${puzzle.theme}. Side to move: ${puzzle.sideToMove}.`);
         }
         setGame(next);
         setSelected(null);
         return;
       }
-      if (piece?.color === puzzle.sideToMove) setSelected(square);
       return;
     }
     if (piece?.color === puzzle.sideToMove) setSelected(square);
   }
 
-  function askPuzzleHint() {
+  async function askPuzzleHint() {
     const next = Math.min(3, hintsUsed + 1);
     setHintsUsed(next);
-    setFeedback(`${coach.name}: ${puzzle.hints[next - 1]}`);
+    debugLog('PuzzleScreen', `Hint requested — level ${next}`);
+    const hintText = puzzle.hints[next - 1] ?? '';
+    const prompt = [
+      `The student asked for hint level ${next} of 3 in puzzle "${puzzle.title}" (theme: ${puzzle.theme}).`,
+      next < 3 ? 'Do not reveal the exact move.' : `You may reveal the move: ${puzzle.solution[0]}.`,
+      hintText,
+      'Give 1-2 teaching sentences. Do not read raw square notation aloud.',
+    ].join(' ');
+    void chessConvai.speakCoachMessage(coach, prompt, `Puzzle theme: ${puzzle.theme}. Side to move: ${puzzle.sideToMove}.`);
   }
 
   function nextPuzzle() {
-    setIndex((value) => value + 1);
+    debugLog('PuzzleScreen', `Advancing to puzzle index ${index + 1}`);
+    setIndex((v) => v + 1);
+  }
+
+  if (!ready) {
+    return (
+      <LoadingScreen progress={loadingProgress} step={loadingStep}>
+        <CoachCard
+          coach={coach}
+          status="Loading..."
+          onReady={handleAvatarReady}
+        />
+      </LoadingScreen>
+    );
   }
 
   return (
@@ -534,14 +654,18 @@ function PuzzleScreen({ coachId, difficultyId, onBack }: { coachId: CoachId; dif
         </div>
       </header>
       <div className="training-layout">
-        <section className="panel-card puzzle-info">
-          <p className="eyebrow">{puzzle.theme}</p>
-          <h2>{puzzle.title}</h2>
-          <p>{feedback}</p>
-          <button className="primary-action" onClick={askPuzzleHint} disabled={hintsUsed >= 3}>Hint {hintsUsed}/3</button>
-          <button className="ghost-action" onClick={nextPuzzle}>Next puzzle</button>
+        <div className="puzzle-left-col">
+          <CoachCard coach={coach} status={`${puzzle.theme} · ${puzzle.title}`} lastLine={feedback || undefined} />
+          <div className="puzzle-actions">
+            <button className="primary-action" onClick={() => void askPuzzleHint()} disabled={hintsUsed >= 3}>
+              Hint {hintsUsed > 0 ? `(${hintsUsed}/3)` : ''}
+            </button>
+            <button className="ghost-action" onClick={nextPuzzle}>Next puzzle</button>
+          </div>
+        </div>
+        <section className="game-stage puzzle-board-stage">
+          <ChessBoard game={game} selected={selected} legalMoves={legalMoves} onSquareClick={(sq) => void handlePuzzleSquare(sq)} />
         </section>
-        <ChessBoard game={game} selected={selected} legalMoves={legalMoves} onSquareClick={handlePuzzleSquare} />
       </div>
     </main>
   );
@@ -607,11 +731,11 @@ function ReplayViewer({ session }: { session: StoredGameSession }) {
         <h2>{session.result}</h2>
         <p>{session.analysis?.opening ?? 'Analysis pending or not generated yet.'}</p>
         <div className="replay-controls">
-          <button onClick={() => setPly(0)}>{'<<'}</button>
-          <button onClick={() => setPly((value) => Math.max(0, value - 1))}>{'<'}</button>
+          <button title="Start" aria-label="Start" onClick={() => setPly(0)}><ChevronsLeft size={18} /></button>
+          <button title="Previous" aria-label="Previous" onClick={() => setPly((value) => Math.max(0, value - 1))}><ChevronLeft size={18} /></button>
           <span>{ply}/{session.moves.length}</span>
-          <button onClick={() => setPly((value) => Math.min(session.moves.length, value + 1))}>{'>'}</button>
-          <button onClick={() => setPly(session.moves.length)}>{'>>'}</button>
+          <button title="Next" aria-label="Next" onClick={() => setPly((value) => Math.min(session.moves.length, value + 1))}><ChevronRight size={18} /></button>
+          <button title="End" aria-label="End" onClick={() => setPly(session.moves.length)}><ChevronsRight size={18} /></button>
         </div>
         <ol className="replay-moves invisible-scroll">
           {session.moves.map((move, index) => (

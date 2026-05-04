@@ -35,10 +35,21 @@ const headers = {
 export const MODEL_OPTIONS = [
   { label: 'GPT-4.1 mini', value: 'gpt-4.1-mini' },
   { label: 'GPT-4.1', value: 'gpt-4.1' },
+  { label: 'GPT-4.1 nano', value: 'gpt-4.1-nano' },
   { label: 'GPT-4o mini', value: 'gpt-4o-mini' },
+  { label: 'GPT-4o', value: 'gpt-4o' },
+  { label: 'Claude Opus 4.1', value: 'claude-opus-4.1' },
+  { label: 'Claude Opus 4', value: 'claude-opus-4' },
   { label: 'Claude 4 Sonnet', value: 'claude-4-sonnet' },
+  { label: 'Claude 3.7 Sonnet', value: 'claude-3-7-sonnet' },
   { label: 'Gemini 2.5 Flash', value: 'gemini-2.5-flash' },
+  { label: 'Gemini 2.5 Flash Lite', value: 'gemini-2.5-flash-lite' },
+  { label: 'Gemini 2.0 Flash', value: 'gemini-2.0-flash' },
+  { label: 'Gemma 3n e4b', value: 'gemma-3n-e4b' },
+  { label: 'Gemma 3n e2b', value: 'gemma-3n-e2b' },
+  { label: 'Llama 4 Maverick', value: 'llama-4-maverick' },
   { label: 'Llama 4 Scout', value: 'llama-4-scout' },
+  { label: 'Llama 3.3 70B', value: 'llama-3-70B' },
 ];
 
 export function hasConvaiApiKey(): boolean {

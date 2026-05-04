@@ -30,3 +30,4 @@ public/*.bin
 
 demo/
 docs/prompts.txt
+docs/AGENT_HANDOFF.md

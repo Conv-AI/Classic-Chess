@@ -5,6 +5,7 @@ import * as THREE from 'three';
 import type { CoachId } from './coachConfig';
 import { chessConvai } from './convaiManager';
 import { applyCC4TeethMotion, decayCC4TeethMotion } from './cc4TeethMotion';
+import { debugLog } from './debugLog';
 
 const MATERIAL_TUNING = {
   alphaTest: 0.35,
@@ -194,6 +195,7 @@ type Props = {
   assetName: string;
   charUrl: string;
   animUrl: string;
+  onReady?: () => void;
   framing: {
     cameraZ: number;
     fov: number;
@@ -204,7 +206,7 @@ type Props = {
   };
 };
 
-export default function ReallusionCharacter({ coachId, assetName, charUrl, animUrl, framing }: Props) {
+export default function ReallusionCharacter({ coachId, assetName, charUrl, animUrl, framing, onReady }: Props) {
   const groupRef = useRef<THREE.Group>(null);
   const hadLipsyncRef = useRef(false);
   const wasDecayingRef = useRef(false);
@@ -220,6 +222,7 @@ export default function ReallusionCharacter({ coachId, assetName, charUrl, animU
 
   useEffect(() => {
     if (!groupRef.current) return;
+    debugLog('ReallusionCharacter', `Framing character coachId=${coachId} assetName=${assetName}`);
     groupRef.current.position.set(0, 0, 0);
     groupRef.current.rotation.set(0, 0, 0);
     groupRef.current.scale.setScalar(1);
@@ -232,18 +235,21 @@ export default function ReallusionCharacter({ coachId, assetName, charUrl, animU
     groupRef.current.position.y = targetTop - box.max.y + framing.portraitCropBias;
     groupRef.current.position.x = framing.horizontalOffset;
     groupRef.current.updateMatrixWorld(true);
-  }, [scene, framing]);
+    debugLog('ReallusionCharacter', `onReady firing for coachId=${coachId}`);
+    onReady?.();
+  }, [scene, framing, onReady, coachId, assetName]);
 
   useEffect(() => {
     const keys = Object.keys(actions);
     const idleName = keys.find((key) => key.toLowerCase().includes('idle')) ?? keys[0];
     const action = idleName ? actions[idleName] : null;
+    debugLog('ReallusionCharacter', `Playing animation "${idleName ?? 'none'}" for coachId=${coachId}`);
     if (!action) return;
     action.reset().fadeIn(0.3).play();
     return () => {
       action.fadeOut(0.3);
     };
-  }, [actions]);
+  }, [actions, coachId]);
 
   useFrame(() => {
     if (!groupRef.current) return;

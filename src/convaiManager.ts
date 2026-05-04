@@ -1,4 +1,5 @@
-import { COACHES, type CoachConfig, type CoachId } from './coachConfig';
+import { buildCoachInstruction } from './chessAi';
+import { COACHES, type CoachConfig, type CoachId, type DifficultyConfig } from './coachConfig';
 import { debugLog } from './debugLog';
 
 const API_KEY = import.meta.env.VITE_CONVAI_API_KEY as string;
@@ -174,6 +175,13 @@ class ChessConvaiManager {
         debugLog('Convai', `[${coach.name}] AudioRenderer failed:`, err);
       }
 
+      try {
+        await client.audioControls.enableAudio();
+        debugLog('Convai', `[${coach.name}] audio enabled`);
+      } catch (err) {
+        debugLog('Convai', `[${coach.name}] enableAudio failed:`, err);
+      }
+
       setTimeout(() => {
         document.querySelectorAll('audio').forEach((el) => {
           if (el.paused) el.play().catch(() => {});
@@ -224,14 +232,14 @@ class ChessConvaiManager {
     });
   }
 
-  async sendUserChat(coach: CoachConfig, message: string, dynamicInfo: string): Promise<string> {
+  async sendUserChat(coach: CoachConfig, difficulty: DifficultyConfig, message: string, dynamicInfo: string): Promise<string> {
     return this.speakCoachMessage(
       coach,
       [
-        `The player sent this chat message: "${message}".`,
-        `Reply as ${coach.name}, their chess coach, in one useful sentence under 22 words.`,
-        coach.promptStyle,
-        'Stay grounded in the current chess position. Avoid raw SAN, file-rank square names, and notation aloud.',
+        buildCoachInstruction(coach, difficulty, 'chat'),
+        `You asked me this: "${message}".`,
+        'Reply in first person as the coach. Address the student as "you".',
+        'Stay grounded in the current chess position. Avoid raw SAN, file-rank square names, and notation aloud unless needed for text clarity.',
       ].join(' '),
       dynamicInfo,
     );

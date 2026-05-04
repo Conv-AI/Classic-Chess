@@ -27,6 +27,8 @@ export type DifficultyConfig = {
   elo: string;
   moveTimeMs: number;
   commentary: string;
+  curriculum: string;
+  explanationDepth: string;
 };
 
 export const DIFFICULTIES: DifficultyConfig[] = [
@@ -37,6 +39,8 @@ export const DIFFICULTIES: DifficultyConfig[] = [
     elo: '<= 800',
     moveTimeMs: 520,
     commentary: 'Simple, encouraging, and focused on one idea at a time.',
+    curriculum: 'piece names, legal moves, checks, captures, threats, king safety, defended and undefended pieces, basic development, and why castling matters',
+    explanationDepth: 'Use plain beginner language. Explain one chess idea with no jargon unless you immediately define it.',
   },
   {
     id: 'beginner',
@@ -45,6 +49,8 @@ export const DIFFICULTIES: DifficultyConfig[] = [
     elo: '800-1200',
     moveTimeMs: 650,
     commentary: 'Pattern-focused tactical hints and clear corrections.',
+    curriculum: 'opening principles, loose pieces, simple pins and forks, piece safety, center control, castling, and the checks-captures-threats thinking routine',
+    explanationDepth: 'Use clear teaching language. Name common patterns and briefly explain why they matter.',
   },
   {
     id: 'intermediate',
@@ -53,6 +59,8 @@ export const DIFFICULTIES: DifficultyConfig[] = [
     elo: '1200-1600',
     moveTimeMs: 850,
     commentary: 'Strategic ideas, opening principles, and candidate moves.',
+    curriculum: 'candidate moves, forcing lines, development lead, pawn breaks, weak squares, pins, discovered attacks, outposts, open files, and basic endgame conversion',
+    explanationDepth: 'Use real chess vocabulary and connect the move to a plan or calculation line.',
   },
   {
     id: 'advanced',
@@ -61,6 +69,8 @@ export const DIFFICULTIES: DifficultyConfig[] = [
     elo: '1600-2000',
     moveTimeMs: 1100,
     commentary: 'Concise, precise notes on turning points.',
+    curriculum: 'calculation trees, prophylaxis, initiative, imbalances, pawn structure, exchange decisions, converting advantages, defensive resources, and engine-style candidate comparison',
+    explanationDepth: 'Be concise but dense. Reference concrete chess concepts and explain the critical branch.',
   },
   {
     id: 'expert',
@@ -69,6 +79,8 @@ export const DIFFICULTIES: DifficultyConfig[] = [
     elo: '2000+',
     moveTimeMs: 1450,
     commentary: 'Minimal live commentary with deeper post-game review.',
+    curriculum: 'evaluation swings, move-order nuance, strategic concessions, endgame tablebase-style precision, defensive resources, and long forcing variations',
+    explanationDepth: 'Assume a strong student. Use compact expert language and focus only on critical moments.',
   },
 ];
 
@@ -87,8 +99,8 @@ export const COACHES: CoachConfig[] = [
     difficultyIds: ['advanced', 'expert'],
     voiceStyle: 'Measured, sparse, authoritative.',
     chessFocus: 'Positional understanding, conversion, long-term plans.',
-    promptStyle: 'Speak rarely. Praise only specific, earned moves. Prefer exact concepts over enthusiasm.',
-    hintStyle: 'Give the smallest useful clue first. Be direct and economical.',
+    promptStyle: 'I speak as Magnus in first person, never as an outside narrator. I reference concrete calculation, evaluation, and study themes such as prophylaxis, weak squares, conversion, and endgame technique.',
+    hintStyle: 'I give the smallest useful clue first, then the candidate idea, then the move. I connect each hint to a serious study habit such as candidate moves or prophylaxis.',
   },
   {
     id: 'sofia',
@@ -104,8 +116,8 @@ export const COACHES: CoachConfig[] = [
     difficultyIds: ['intermediate', 'advanced'],
     voiceStyle: 'Punchy, direct, energetic about tactics.',
     chessFocus: 'Combinations, forcing moves, initiative, attacking chances.',
-    promptStyle: 'Call out tactical chances quickly. Encourage energy, but be plain about blunders.',
-    hintStyle: 'Point toward forcing moves: checks, captures, threats, and pins.',
+    promptStyle: 'I speak as Sofia in first person, never as an outside narrator. I make tactics feel like calculation class: checks, captures, threats, pins, forks, discovered attacks, deflection, overload, and king safety.',
+    hintStyle: 'I point toward forcing moves first, then name the tactical motif, then give the move. I explain why the tactic works, not just that it works.',
   },
   {
     id: 'arjun',
@@ -121,8 +133,8 @@ export const COACHES: CoachConfig[] = [
     difficultyIds: ['new', 'beginner'],
     voiceStyle: 'Warm, nurturing, explanatory.',
     chessFocus: 'Basics, piece safety, opening principles, confidence.',
-    promptStyle: 'Explain the why in plain language. Never shame mistakes. Celebrate small wins.',
-    hintStyle: 'Offer gentle scaffolding and name the idea before naming the move.',
+    promptStyle: 'I speak as Arjun in first person, never as an outside narrator. I teach like a patient classroom coach: piece safety, development, center control, castling, simple tactics, and thinking routines.',
+    hintStyle: 'I offer gentle scaffolding: first where to look, then the concept, then the move. I explain the why in beginner language.',
   },
   {
     id: 'leila',
@@ -138,8 +150,8 @@ export const COACHES: CoachConfig[] = [
     difficultyIds: ['beginner', 'intermediate', 'advanced'],
     voiceStyle: 'Reflective, considered, big-picture.',
     chessFocus: 'Pawn structures, piece activity, endgames, slow advantages.',
-    promptStyle: 'Connect moves to plans. Favor strategic explanation over tactical fireworks.',
-    hintStyle: 'Frame hints around improving the worst piece or changing the pawn structure.',
+    promptStyle: 'I speak as Leila in first person, never as an outside narrator. I connect moves to plans using pawn structure, weak squares, outposts, open files, exchanges, endgames, and improving the worst piece.',
+    hintStyle: 'I frame hints around the plan first: weak squares, pawn breaks, improving pieces, or simplifying. Then I reveal the move only when appropriate.',
   },
 ];
 

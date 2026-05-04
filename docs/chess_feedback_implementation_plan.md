@@ -47,3 +47,31 @@
 - Files Changed: `src/convaiManager.ts`
 - Retest Result:
 - Notes: The player still chooses a different coach from the menu before the next Quick Play round.
+
+### Feature: UI polish and interaction fixes
+- Broken Feedback: Piece selection did not switch cleanly, setup/replay/game layouts had excess empty space or overlap, puzzle mode felt sparse and lacked the coach avatar, review buttons used raw text symbols, custom coach dropdown colors were inconsistent, the browser tab had no favicon, and the loading screen could finish before the avatar rendered.
+- Fix Given: Clicking another friendly piece now switches selection immediately. Main menu, game, puzzle, and review layouts are vertically centered and replay columns are constrained. Puzzle mode now includes the active coach window and cycles the full puzzle set when a difficulty has too few puzzles. Review controls use Lucide icon buttons. Select options inherit the dark theme. Added a favicon and a hidden avatar prewarm during loading so the game opens after the coach portrait has mounted.
+- Files Changed: `src/App.tsx`, `src/styles.css`, `src/puzzles.ts`, `src/DanielleCoach.tsx`, `src/ReallusionCharacter.tsx`, `src/LoadingScreen.tsx`, `index.html`, `public/favicon.svg`, `vite.config.ts`, `package.json`
+- Retest Result:
+- Notes: Vite `base: './'` was added for GitHub Pages relative asset paths.
+
+### Feature: Coach answer quality and first-person teaching
+- Broken Feedback: Coaches sounded like third-person narrators and gave generic, low-value lines instead of grounded chess instruction.
+- Fix Given: Rewrote persona files as first-person chess professor actor direction with concrete study topics. Added difficulty curriculum and explanation depth to the runtime dynamic info. Move, hint, and chat prompts now explicitly require "I/you" speech, forbid "the player/they/the coach", and ask for level-appropriate chess-class explanations referencing real concepts.
+- Files Changed: `docs/coach_personas/*.txt`, `src/coachConfig.ts`, `src/chessAi.ts`, `src/App.tsx`, `src/convaiManager.ts`, `src/chessAi.test.ts`
+- Retest Result:
+- Notes: Local debug log was not present, so the fix targeted the prompt paths that generate the live Convai requests.
+
+### Feature: Convai model dropdown completeness
+- Broken Feedback: The LLM model section only exposed a small subset of the Convai Core AI Settings models.
+- Fix Given: Expand the model option list to include every supported model currently listed in the Convai Core AI Settings API: GPT-4.1, GPT-4.1-mini, GPT-4.1-nano, GPT-4o, GPT-4o-mini, Claude-Opus-4.1, Claude-Opus-4, Claude-4-Sonnet, Claude-3.7-Sonnet, Gemini-2.5-Flash, Gemini-2.5-Flash-Lite, Gemini-2.0-Flash, Gemma-3n-e4b, Gemma-3n-e2b, Llama-4-Maverick, Llama-4-Scout, and Llama-3.3-70B.
+- Files Changed: `src/convaiCoreApi.ts`
+- Retest Result:
+- Notes: Keep the UI list aligned with the Convai docs source of truth.
+
+### Feature: Puzzle screen layout and audio playback
+- Broken Feedback: The puzzle screen felt off-center, the left side was not grouped like a proper coach column, and voice replies were arriving as text without audio.
+- Fix Given: Document the desired fix path for the next pass: move the coach window and puzzle hint card into a left column and keep the board in a right column, then inspect the Convai logs to determine why audio playback is missing despite text responses.
+- Files Changed:
+- Retest Result:
+- Notes: This is a follow-up item for the next agent rather than a runtime patch in this turn.

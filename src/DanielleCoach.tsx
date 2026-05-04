@@ -1,7 +1,8 @@
-import { Suspense } from 'react';
+import { Suspense, useEffect, useRef } from 'react';
 import { Canvas } from '@react-three/fiber';
 import { useGLTF } from '@react-three/drei';
 import type { CoachConfig } from './coachConfig';
+import { debugLog } from './debugLog';
 import ReallusionCharacter from './ReallusionCharacter';
 
 const DEFAULT_CHARACTER_ASSET_BASE = 'https://huggingface.co/sponge/Orca/resolve/main/';
@@ -23,15 +24,27 @@ type Props = {
   coach: CoachConfig;
   status: string;
   lastLine?: string;
+  onReady?: () => void;
 };
 
-export default function CoachCard({ coach, status, lastLine }: Props) {
+export default function CoachCard({ coach, status, lastLine, onReady }: Props) {
   const modelUrl = assetUrl(coach.modelFile);
   const idleUrl = assetUrl(coach.idleFile);
   const framing = FRAMING_BY_ASSET[coach.assetName] ?? FRAMING_BY_ASSET.Danielle;
+  const lineRef = useRef<HTMLParagraphElement>(null);
+  const wrapRef = useRef<HTMLDivElement>(null);
 
   useGLTF.preload(modelUrl);
   useGLTF.preload(idleUrl);
+  debugLog('CoachCard', `Rendering coach=${coach.id} model=${coach.modelFile}`);
+
+  useEffect(() => {
+    const el = lineRef.current;
+    const wrap = wrapRef.current;
+    if (!el || !wrap) return;
+    const scrollable = el.scrollHeight > el.clientHeight + 2;
+    wrap.classList.toggle('is-scrollable', scrollable);
+  }, [lastLine]);
 
   return (
     <section className="coach-card character-card" aria-label={`${coach.name} chess coach`}>
@@ -58,6 +71,7 @@ export default function CoachCard({ coach, status, lastLine }: Props) {
               assetName={coach.assetName}
               charUrl={modelUrl}
               animUrl={idleUrl}
+              onReady={onReady}
               framing={{
                 cameraZ: 0.9,
                 fov: 36,
@@ -74,7 +88,11 @@ export default function CoachCard({ coach, status, lastLine }: Props) {
         <strong>{coach.name}</strong>
         <span>{status}</span>
       </div>
-      {lastLine && <p className="coach-line">{lastLine}</p>}
+      {lastLine && (
+        <div ref={wrapRef} className="coach-line-wrap">
+          <p ref={lineRef} className="coach-line">{lastLine}</p>
+        </div>
+      )}
     </section>
   );
 }

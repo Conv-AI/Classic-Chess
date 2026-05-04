@@ -1,4 +1,5 @@
 import { Chess, type Move, type Square } from 'chess.js';
+import type { CoachConfig, DifficultyConfig } from './coachConfig';
 
 const PIECE_VALUES: Record<string, number> = {
   p: 100,
@@ -116,7 +117,20 @@ export function legalTargets(fen: string, square: Square) {
   return game.moves({ square, verbose: true }).map((move) => move.to);
 }
 
-export function buildDynamicCoachInfo(game: Chess, plannedMove?: Move | null, lastMove?: Move | null, coachName = 'Coach') {
+export function buildDynamicCoachInfo(
+  game: Chess,
+  plannedMove?: Move | null,
+  lastMove?: Move | null,
+  coach?: Pick<CoachConfig, 'name' | 'title' | 'chessFocus' | 'voiceStyle'> | string,
+  difficulty?: Pick<DifficultyConfig, 'label' | 'elo' | 'stockfishSkill' | 'curriculum' | 'explanationDepth'>,
+) {
+  const coachName = typeof coach === 'string' ? coach : coach?.name ?? 'Coach';
+  const coachInfo = typeof coach === 'object'
+    ? `Coach identity: I am ${coach.name}, ${coach.title}. My chess specialty: ${coach.chessFocus}. My voice: ${coach.voiceStyle}.`
+    : `Coach identity: I am ${coachName}.`;
+  const levelInfo = difficulty
+    ? `Student level: ${difficulty.label}, approximate rating ${difficulty.elo}, Stockfish skill ${difficulty.stockfishSkill}. Teaching curriculum for this level: ${difficulty.curriculum}. Explanation depth: ${difficulty.explanationDepth}.`
+    : '';
   const turn = game.turn() === 'w' ? 'White to move' : 'Black to move';
   const status = game.isCheckmate()
     ? 'checkmate'
@@ -128,15 +142,58 @@ export function buildDynamicCoachInfo(game: Chess, plannedMove?: Move | null, la
   const legalMoveCount = game.moves().length;
   const material = materialSummary(game);
   const lastMoveInfo = lastMove ? describeLastMove(lastMove) : 'No move has been played yet.';
-  const moveHint = plannedMove ? `${coachName} planned move: ${plannedMove.san} from ${plannedMove.from} to ${plannedMove.to}.` : '';
+  const moveHint = plannedMove ? `My private legal reply as ${coachName}: ${plannedMove.san} from ${plannedMove.from} to ${plannedMove.to}.` : '';
+  const tacticalInfo = tacticalSummary(game, lastMove);
   return [
+    coachInfo,
+    levelInfo,
     turn,
     `Position status: ${status}.`,
     `Legal moves available: ${legalMoveCount}.`,
     material,
+    tacticalInfo,
     lastMoveInfo,
     moveHint,
+    'Speech rule: speak in first person as the coach. Address the user as "you". Do not say "the player", "they", or "the coach" in the spoken answer.',
   ].filter(Boolean).join(' ').trim();
+}
+
+export function buildCoachInstruction(coach: CoachConfig, difficulty: DifficultyConfig, mode: 'move' | 'hint' | 'chat') {
+  const base = [
+    `I am ${coach.name}, ${coach.title}, speaking directly to my chess student.`,
+    `I must speak in first person as myself: use "I" for my own coaching view and "you" for the student.`,
+    'I must not say "the player", "they", "them", or "the coach" in the spoken answer.',
+    `Current student level: ${difficulty.label} (${difficulty.elo}), Stockfish skill ${difficulty.stockfishSkill}.`,
+    `Teach at this level using this curriculum: ${difficulty.curriculum}.`,
+    `Depth rule: ${difficulty.explanationDepth}`,
+    `My specialty: ${coach.chessFocus}.`,
+    coach.promptStyle,
+  ];
+
+  if (mode === 'move') {
+    base.push(
+      'Give a real coaching explanation, not a generic reaction.',
+      'Reference at least one concrete chess concept when useful, such as development, king safety, a pin, a fork, a loose piece, an open file, pawn structure, candidate moves, prophylaxis, or conversion.',
+      'Keep it natural for voice: usually 1-2 sentences, up to 34 words if the position needs teaching.',
+      'Coach what you just saw on the board. Do not narrate routine engine moves.',
+    );
+  }
+
+  if (mode === 'hint') {
+    base.push(
+      coach.hintStyle,
+      'Give a structured class-style hint. Connect it to a study topic or thinking routine.',
+      'Do not reveal the exact move before hint level 3.',
+    );
+  }
+
+  if (mode === 'chat') {
+    base.push(
+      'Answer like a chess teacher in office hours: concrete, level-appropriate, and tied to the current position.',
+    );
+  }
+
+  return base.join(' ');
 }
 
 function materialSummary(game: Chess) {
@@ -147,16 +204,31 @@ function materialSummary(game: Chess) {
 }
 
 function describeLastMove(move: Move) {
-  const mover = move.color === 'w' ? 'The player' : 'The coach';
+  const mover = move.color === 'w' ? 'You' : 'I';
   const piece = pieceName(move.piece);
   const capture = move.captured
     ? move.color === 'w'
-      ? ` The player captured the coach's ${pieceName(move.captured)}; the coach should acknowledge losing material if it matters.`
-      : ` The coach captured the player's ${pieceName(move.captured)}.`
+      ? ` You captured my ${pieceName(move.captured)}; I should acknowledge losing material if it matters.`
+      : ` I captured your ${pieceName(move.captured)}.`
     : '';
   const check = move.san.includes('+') ? ' The move gave check.' : '';
   const mate = move.san.includes('#') ? ' The move gave checkmate.' : '';
   return `Last move: ${mover} moved a ${piece} from ${move.from} to ${move.to}.${capture}${check}${mate}`;
+}
+
+function tacticalSummary(game: Chess, lastMove?: Move | null) {
+  const legal = game.moves({ verbose: true });
+  const checks = legal.filter((move) => move.san.includes('+') || move.san.includes('#')).length;
+  const captures = legal.filter((move) => move.captured).length;
+  const promotions = legal.filter((move) => move.promotion).length;
+  const movedPiece = lastMove ? pieceName(lastMove.piece) : '';
+  const centerMove = lastMove && (CENTER_SQUARES.has(lastMove.to) || NEAR_CENTER_SQUARES.has(lastMove.to))
+    ? `Your last move affected the center with a ${movedPiece}.`
+    : '';
+  return [
+    `Forcing move scan for side to move: ${checks} checks, ${captures} captures, ${promotions} promotions.`,
+    centerMove,
+  ].filter(Boolean).join(' ');
 }
 
 function pieceName(piece: string) {

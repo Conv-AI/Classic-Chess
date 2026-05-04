@@ -1,4 +1,16 @@
+import { useState } from 'react';
 import { COACHES, DIFFICULTIES, suggestedDifficultyForCoach, type CoachId, type DifficultyId } from './coachConfig';
+import { PUZZLES } from './puzzles';
+
+type Mode = 'quickplay' | 'puzzles';
+
+const PUZZLE_DIFFICULTY_LABELS: Record<string, string> = {
+  new: 'Mate in 1, free pieces',
+  beginner: 'Forks, pins, skewers',
+  intermediate: 'Multi-step tactics',
+  advanced: 'Defense & endgames',
+  expert: 'Strategic & prophylaxis',
+};
 
 type Props = {
   coachId: CoachId;
@@ -23,7 +35,18 @@ export default function MenuScreen({
   onGames,
   onCreator,
 }: Props) {
+  const [selectedMode, setSelectedMode] = useState<Mode>('quickplay');
   const selectedCoach = COACHES.find((coach) => coach.id === coachId) ?? COACHES[0];
+
+  const isPuzzles = selectedMode === 'puzzles';
+  const difficultyLabel = isPuzzles ? 'Puzzle Challenge' : 'Skill Level';
+  const difficultyNote = isPuzzles
+    ? 'Sets the type of puzzle you face — pick what suits your current training focus.'
+    : 'Controls how strong the AI plays and how deep the coaching commentary goes.';
+
+  function puzzleCountForDifficulty(id: DifficultyId) {
+    return PUZZLES.filter((p) => p.difficultyId === id).length;
+  }
 
   return (
     <main className="menu-screen app-menu">
@@ -31,17 +54,23 @@ export default function MenuScreen({
         <div className="menu-heading">
           <p className="eyebrow">Convai Chess Coaches</p>
           <h1>Classic Chess</h1>
-          <p>Choose a coach, tune the board strength, then play, train, review, or create your own coach.</p>
+          <p>Choose a coach, set your level, then play a full game, tackle puzzles, review your sessions, or build your own coach.</p>
         </div>
 
         <div className="mode-grid">
-          <button className="mode-tile primary-tile" onClick={onQuickPlay}>
+          <button
+            className={`mode-tile primary-tile${selectedMode === 'quickplay' ? ' selected-mode-tile' : ''}`}
+            onClick={() => setSelectedMode('quickplay')}
+          >
             <span>Quick Play</span>
-            <strong>Full game with live coaching</strong>
+            <strong>Full game — live coaching after every move</strong>
           </button>
-          <button className="mode-tile" onClick={onPuzzles}>
+          <button
+            className={`mode-tile${selectedMode === 'puzzles' ? ' selected-mode-tile' : ''}`}
+            onClick={() => setSelectedMode('puzzles')}
+          >
             <span>Puzzles with AI</span>
-            <strong>Score tactics with guided hints</strong>
+            <strong>Focused tactics — scored with guided AI hints</strong>
           </button>
           <button className="mode-tile" onClick={onGames}>
             <span>My Games</span>
@@ -75,18 +104,26 @@ export default function MenuScreen({
           </div>
 
           <div>
-            <p className="eyebrow">Skill Level</p>
+            <p className="eyebrow">{difficultyLabel}</p>
+            <p className="difficulty-note">{difficultyNote}</p>
             <div className="difficulty-picker">
-              {DIFFICULTIES.map((difficulty) => (
-                <button
-                  key={difficulty.id}
-                  className={difficulty.id === difficultyId ? 'selected-option' : ''}
-                  onClick={() => onDifficultyChange(difficulty.id)}
-                >
-                  <span>{difficulty.label}</span>
-                  <small>{difficulty.elo}</small>
-                </button>
-              ))}
+              {DIFFICULTIES.map((difficulty) => {
+                const count = isPuzzles ? puzzleCountForDifficulty(difficulty.id) : 0;
+                return (
+                  <button
+                    key={difficulty.id}
+                    className={difficulty.id === difficultyId ? 'selected-option' : ''}
+                    onClick={() => onDifficultyChange(difficulty.id)}
+                  >
+                    <span>{difficulty.label}</span>
+                    <small>
+                      {isPuzzles
+                        ? `${PUZZLE_DIFFICULTY_LABELS[difficulty.id] ?? difficulty.elo} · ${count} puzzle${count !== 1 ? 's' : ''}`
+                        : difficulty.elo}
+                    </small>
+                  </button>
+                );
+              })}
             </div>
           </div>
 
@@ -97,6 +134,18 @@ export default function MenuScreen({
             <small>{selectedCoach.voiceStyle}</small>
           </div>
         </section>
+
+        <div className="mode-launch">
+          {isPuzzles ? (
+            <button className="menu-play" onClick={onPuzzles}>
+              Start Puzzles
+            </button>
+          ) : (
+            <button className="menu-play" onClick={onQuickPlay}>
+              Quick Play
+            </button>
+          )}
+        </div>
       </section>
     </main>
   );
