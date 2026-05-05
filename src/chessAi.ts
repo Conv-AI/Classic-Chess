@@ -156,7 +156,7 @@ export function buildDynamicCoachInfo(
     tacticalInfo,
     lastMoveInfo,
     moveHint,
-    'Speech rule: speak in first person as the coach. Address the user as "you". Do not say "the player", "they", or "the coach". Never write raw chess notation (SAN, square names, file names) — spell everything out as natural speech for TTS: "knight to f 3" not "Nf3", "pawn to e 4" not "e4", "the a file" not "a-file".',
+    'Speech rule: speak in first person as the coach. Address the user as "you". Do not say "the player", "they", or "the coach". Never write raw chess notation — capitalize file letters and separate letter from digit: "the A file", "E 4", "knight to F 3", "bishop takes E 5". TTS needs the capital letter so it reads it as the letter name, not the article.',
   ].filter(Boolean).join(' ').trim();
 }
 
@@ -170,7 +170,7 @@ export function buildCoachInstruction(coach: CoachConfig, difficulty: Difficulty
     `Depth rule: ${difficulty.explanationDepth}`,
     `My specialty: ${coach.chessFocus}.`,
     coach.promptStyle,
-    'TTS speech rule: my response will be read aloud by a text-to-speech engine. Never write raw chess notation like "Nf3", "e4", "Bxe5", or "a-file" — the TTS cannot pronounce these correctly. Instead always spell them out naturally: say "knight to f 3", "pawn to e 4", "bishop takes e 5", "the a file". Separate every letter and number with a space or a word. Write speech, not notation.',
+    'TTS speech rule: my response will be read aloud by a text-to-speech engine so I must write speech, not notation. Never write raw SAN or square names. For files always capitalize the letter so TTS reads it as the letter name: "the A file", "the E file". For squares capitalize the letter and separate with a space: "E 4", "D 5". For piece moves spell the piece out and use the same format: "knight to F 3", "pawn to E 4", "bishop takes E 5", "rook to A 8". Captures use "takes": "bishop takes E 5". Checks are "giving check". Never write "e4", "Nf3", "Bxe5", "a-file", or any run-together notation.',
   ];
 
   if (mode === 'move') {

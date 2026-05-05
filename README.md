@@ -34,8 +34,17 @@ npm install
 npm run dev
 ```
 
+## TTS Notation Convention
+
+The coach speaks via Convai TTS. Raw chess notation sounds wrong when read aloud — `e4` is read as "uh 4" and `a-file` as "uh file". The prompt rules enforce:
+
+- File letters are capitalized: `"the A file"`, `"the E file"`
+- Square names separate letter from digit with a space: `"E 4"`, `"D 5"`
+- Piece moves are spelled out: `"knight to F 3"`, `"bishop takes E 5"`
+
+A capital letter makes TTS read it as the letter name rather than an article. These rules live in `buildCoachInstruction` and `buildDynamicCoachInfo` in [src/chessAi.ts](src/chessAi.ts). If a specific word still sounds wrong, add a custom pronunciation entry in the Convai platform dashboard.
+
 ## Notes For The Next Agent
 
 - The plan tracker lives in [docs/chess_feedback_implementation_plan.md](/c:/Users/akshi/Downloads/playtika/Classic%20Chess/docs/chess_feedback_implementation_plan.md).
-- The current follow-up items are puzzle layout and audio playback.
 - GitHub Pages support was improved by setting Vite `base` to `./` and adding a local favicon.

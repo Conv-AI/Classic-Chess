@@ -115,11 +115,15 @@ Local poker engine reaches AI turn
 
 The prompt tells the character to use its planned move as private acting direction. That way a character can sound confident, nervous, dismissive, or aggressive without bluntly saying "I call" or "I raise" in the dialogue.
 
-## Chess Example: Danielle as a Coach
+## Chess Example: AI Coaching with Multiple Coaches
 
-The chess game uses a simpler one-character setup. Danielle is the only Convai character, so the manager owns one client, one audio renderer, one response stream, and one lipsync queue.
+The chess game supports multiple selectable coach personas — Magnus, Sofia, Arjun, and Leila — each backed by a separate Convai character ID. The manager keeps a pool of connections, one per coach, and routes speech to the active coach. Only one coach is active at a time, so the flow is similar to a single-character setup but the connection pool allows switching coaches without reconnecting from scratch.
 
-When the player moves, the app asks Stockfish for Danielle's reply. Then it builds dynamic coach info and sends Danielle a prompt that asks for one short, meaningful coaching sentence. The prompt also tells her not to pronounce raw notation like `e5`, `Bxf5`, or square names, because chess notation often sounds awkward in text-to-speech. If a word, name, or move still comes out badly, you can also add custom pronunciation guidance in the Convai platform so the TTS says it correctly instead of relying only on prompt wording.
+When the player moves, the app asks Stockfish for Danielle's reply. Then it builds dynamic coach info and sends Danielle a prompt that asks for one short, meaningful coaching sentence.
+
+A key detail is TTS-friendly notation. Raw chess notation like `e4`, `Nf3`, or `a-file` does not sound right when a TTS engine reads it. The letter `e` in `e4` is read as the article "uh", and `a-file` is read as "uh file" rather than "Ay file". The fix is a prompt rule that tells the LLM to always capitalize file letters and separate letters from digits with a space: `"the E file"` instead of `"e-file"`, `"E 4"` instead of `"e4"`, `"knight to F 3"` instead of `"Nf3"`. With a capital letter the TTS reads it as the letter name, not an article or stray sound.
+
+If a word or name still comes out badly despite prompt-level guidance, you can also add custom pronunciation entries in the Convai platform dashboard so the TTS corrects specific terms at the voice level.
 
 The flow is:
 
@@ -133,7 +137,7 @@ Player moves
   -> the planned move is applied to the board
 ```
 
-This lets Danielle behave like a coach instead of a move generator. The chess engine provides strength and legality. Convai provides personality, voice, explanation, and presence.
+This lets the coach behave like a real teacher instead of a move generator. The chess engine provides strength and legality. Convai provides personality, voice, explanation, and presence. Each coach persona has its own teaching style, hint approach, curriculum level descriptions, and explanation depth — all injected into the prompt at runtime so the same Convai pipeline can feel like four different coaching personalities.
 
 ## Streaming Text and Speech Completion
 
