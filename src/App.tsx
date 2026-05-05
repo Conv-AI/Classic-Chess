@@ -291,7 +291,7 @@ function ChessGame({
         'Explain the current position like a real chess class, not a random reaction.',
         'Use the private legal reply only as hidden context for my next move; do not say it unless it is truly instructional.',
         `Private legal reply: ${planned.san} from ${planned.from} to ${planned.to}.`,
-        'Do not invent another move. Do not say raw SAN, file-rank square names, or notation aloud unless a text-only answer requires it.',
+        'Do not invent another move. Never say raw SAN or square names aloud — spell them out for TTS: "knight to f 3" not "Nf3", "the e file" not "e-file".',
       ].join(' ')
       : `${buildCoachInstruction(coach, difficulty, 'move')} Give a useful chess-class explanation of the current position.`;
 
