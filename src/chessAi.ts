@@ -142,7 +142,9 @@ export function buildDynamicCoachInfo(
   const legalMoveCount = game.moves().length;
   const material = materialSummary(game);
   const lastMoveInfo = lastMove ? describeLastMove(lastMove) : 'No move has been played yet.';
-  const moveHint = plannedMove ? `My private legal reply as ${coachName}: ${plannedMove.san} from ${plannedMove.from} to ${plannedMove.to}.` : '';
+  const moveHint = plannedMove
+    ? `My private legal reply as ${coachName}: I will move my ${pieceName(plannedMove.piece)} from ${plannedMove.from} to ${plannedMove.to} (SAN: ${plannedMove.san}).`
+    : '';
   const tacticalInfo = tacticalSummary(game, lastMove);
   return [
     coachInfo,

@@ -295,6 +295,7 @@ function ChessGame({
       ].join(' ')
       : `${buildCoachInstruction(coach, difficulty, 'move')} Give a useful chess-class explanation of the current position.`;
 
+    debugLog('makeCoachMove', `prompt="${prompt}" dynamicInfo="${dynamicInfo}"`);
     const spoken = await chessConvai.speakCoachMessage(coach, prompt, dynamicInfo);
     if (spoken) setCoachLine(spoken);
 
