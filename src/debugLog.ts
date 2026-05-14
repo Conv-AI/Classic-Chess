@@ -1,3 +1,69 @@
-export function debugLog(scope: string, message: string, ...args: unknown[]) {
-  console.info(`[${scope}] ${message}`, ...args);
+// Human-readable structured debug log.
+// In dev: batches entries every 200 ms and POSTs to /api/log (written to debug.log).
+// Deduplicates: identical [scope+message] within 3 s is suppressed.
+
+const DEV = import.meta.env.DEV;
+const DEDUP_WINDOW_MS = 3000;
+const FLUSH_INTERVAL_MS = 200;
+const MAX_MESSAGE_LENGTH = 700;
+const SLOW_DEDUP_SCOPES = new Set(['CoachCard', 'ReallusionCharacter']);
+
+// key → last timestamp
+const recentKeys = new Map<string, number>();
+let batch: string[] = [];
+let flushTimer: ReturnType<typeof setTimeout> | null = null;
+
+function timestamp(): string {
+  const d = new Date();
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mm = String(d.getMinutes()).padStart(2, '0');
+  const ss = String(d.getSeconds()).padStart(2, '0');
+  return `${hh}:${mm}:${ss}`;
+}
+
+function scheduleFlush() {
+  if (flushTimer) return;
+  flushTimer = setTimeout(() => {
+    flushTimer = null;
+    if (batch.length === 0) return;
+    const lines = batch.splice(0);
+    void fetch('/api/log', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(lines),
+    }).catch(() => {});
+  }, FLUSH_INTERVAL_MS);
+}
+
+export function debugLog(scope: string, message: string, ...args: unknown[]): void {
+  // Flatten extra args into the message string for dedup key and display
+  const extra = args.length
+    ? ' ' + args.map((a) => (typeof a === 'object' ? JSON.stringify(a) : String(a))).join(' ')
+    : '';
+  const raw = `${message}${extra}`;
+  const full = raw.length > MAX_MESSAGE_LENGTH
+    ? `${raw.slice(0, MAX_MESSAGE_LENGTH)}... [truncated ${raw.length - MAX_MESSAGE_LENGTH} chars]`
+    : raw;
+  const key = `${scope}|${full}`;
+
+  const now = Date.now();
+  const last = recentKeys.get(key);
+  const dedupWindow = SLOW_DEDUP_SCOPES.has(scope) ? 30000 : DEDUP_WINDOW_MS;
+  if (last !== undefined && now - last < dedupWindow) return;
+  recentKeys.set(key, now);
+
+  // Prune old entries to avoid unbounded map growth
+  if (recentKeys.size > 200) {
+    for (const [k, t] of recentKeys) {
+      if (now - t > 30000) recentKeys.delete(k);
+    }
+  }
+
+  const line = `[${timestamp()}] [${scope}] ${full}`;
+  console.info(line);
+
+  if (DEV) {
+    batch.push(line);
+    scheduleFlush();
+  }
 }

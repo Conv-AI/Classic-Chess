@@ -155,7 +155,7 @@ export const COACHES: CoachConfig[] = [
   },
 ];
 
-export const DEFAULT_COACH = COACHES[2];
+export const DEFAULT_COACH = COACHES[3]; // Leila
 export const DEFAULT_DIFFICULTY = DIFFICULTIES[1];
 
 export function getCoach(id: CoachId): CoachConfig {

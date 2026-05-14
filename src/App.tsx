@@ -1,10 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Chess, type Move, type Square } from 'chess.js';
 import { ChevronsLeft, ChevronsRight, ChevronLeft, ChevronRight } from 'lucide-react';
 import { analyzeGame } from './analysis';
-import { COACHES, DIFFICULTIES, getCoach, getDifficulty, type CoachId, type DifficultyId } from './coachConfig';
+import { getCoach, getDifficulty, type CoachId, type DifficultyId } from './coachConfig';
 import { createCustomCoach, fetchLanguages, fetchVoices, hasConvaiApiKey, MODEL_OPTIONS, type LanguageOption, type VoiceOption } from './convaiCoreApi';
-import { buildCoachInstruction, buildDynamicCoachInfo, legalTargets } from './chessAi';
+import { analyzeCoachMoveContext, buildCoachInstruction, buildDynamicCoachInfo, legalTargets } from './chessAi';
 import { chessConvai } from './convaiManager';
 import { debugLog } from './debugLog';
 import CoachCard from './DanielleCoach';
@@ -12,7 +12,7 @@ import LoadingScreen from './LoadingScreen';
 import MenuScreen from './MenuScreen';
 import { PUZZLES, puzzleScore, type Puzzle } from './puzzles';
 import { stockfishEngine } from './stockfishEngine';
-import { createSessionId, deleteSession, loadSessions, saveSession, type AnalysisSummary, type MoveSnapshot, type StoredGameSession } from './storage';
+import { createSessionId, deleteSession, loadPuzzleProgress, loadSessions, markPuzzleCompleted, resetPuzzleProgress, saveSession, type AnalysisSummary, type MoveSnapshot, type StoredGameSession } from './storage';
 import type { MoveRecord } from './types';
 
 const FILES = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'];
@@ -37,10 +37,33 @@ function squareAt(fileIndex: number, rankIndex: number): Square {
   return `${FILES[fileIndex]}${8 - rankIndex}` as Square;
 }
 
+function MicButton({ className }: { className?: string }) {
+  const [micOn, setMicOn] = useState(false);
+
+  useEffect(() => {
+    return chessConvai.onStatus((s) => setMicOn(s.micEnabled));
+  }, []);
+
+  function toggle() {
+    void chessConvai.setMicEnabled(!micOn);
+  }
+
+  return (
+    <button
+      className={`mic-button ${micOn ? 'mic-on' : ''} ${className ?? ''}`}
+      onClick={toggle}
+      title={micOn ? 'Mute microphone' : 'Enable microphone'}
+      aria-label={micOn ? 'Mute microphone' : 'Enable microphone'}
+    >
+      {micOn ? '🎙' : '🎤'}
+    </button>
+  );
+}
+
 function App() {
   const [screen, setScreen] = useState<Screen>('menu');
-  const [coachId, setCoachId] = useState<CoachId>('arjun');
-  const [difficultyId, setDifficultyId] = useState<DifficultyId>('beginner');
+  const [coachId, setCoachId] = useState<CoachId>('leila');
+  const [difficultyId, setDifficultyId] = useState<DifficultyId>('intermediate');
   const [loadingProgress, setLoadingProgress] = useState(0);
   const [loadingStep, setLoadingStep] = useState('Setting up the board...');
   const [prewarmCoachId, setPrewarmCoachId] = useState<CoachId | null>(null);
@@ -65,7 +88,7 @@ function App() {
   }, [coach.name, coachId]);
 
   async function startQuickPlay() {
-    debugLog('App', `startQuickPlay — coach=${coach.id} difficulty=${difficultyId}`);
+    debugLog('App', `startQuickPlay — mode=quick-play coach=${coach.id} difficulty=${difficultyId}`);
     chessConvai.unlockAudio();
     const selectedCoach = coach;
     setScreen('loading');
@@ -84,9 +107,9 @@ function App() {
     window.setTimeout(() => setScreen('game'), 450);
   }
 
-  function refreshSessions() {
+  const refreshSessions = useCallback(() => {
     setSessions(loadSessions());
-  }
+  }, []);
 
   if (screen === 'loading') {
     const prewarmCoach = prewarmCoachId ? getCoach(prewarmCoachId) : coach;
@@ -113,11 +136,12 @@ function App() {
           setScreen('menu');
         }}
         onSessionsChanged={refreshSessions}
+        key={`game-${coachId}`}
       />
     );
   }
   if (screen === 'puzzles') {
-    return <PuzzleScreen coachId={coachId} difficultyId={difficultyId} onBack={() => setScreen('menu')} />;
+    return <PuzzleScreen coachId={coachId} difficultyId={difficultyId} onBack={() => setScreen('menu')} key={`puzzles-${coachId}`} />;
   }
   if (screen === 'games') {
     return (
@@ -267,6 +291,7 @@ function ChessGame({
     const move = next.move({ from, to, promotion: 'q' });
     if (!move) return false;
     const record = toRecord(move, 'You', fenBefore, next.fen());
+    debugLog('App', `Player move: ${move.san} (${from}→${to}) moveNo=${Number(next.fen().split(' ')[5])} fen="${next.fen()}"`);
 
     setGame(next);
     setHistory((moves) => [...moves, record]);
@@ -276,35 +301,44 @@ function ChessGame({
 
     if (!next.isGameOver()) {
       setThinking(true);
-      void makeCoachMove(next.fen(), move);
+      void makeCoachMove(next.fen(), move, [...history, record]);
     }
     return true;
   }
 
-  async function makeCoachMove(fen: string, playerMove?: Move) {
+  async function makeCoachMove(fen: string, playerMove?: Move, moveHistory: MoveRecord[] = history) {
     const next = new Chess(fen);
     const planned = await stockfishEngine.bestMove(next.fen(), difficulty.moveTimeMs, difficulty.stockfishSkill);
-    const dynamicInfo = buildDynamicCoachInfo(next, planned, playerMove, coach, difficulty);
-    const prompt = planned
-      ? [
-        buildCoachInstruction(coach, difficulty, 'move'),
-        'Explain the current position like a real chess class, not a random reaction.',
-        'Use the private legal reply only as hidden context for my next move; do not say it unless it is truly instructional.',
-        `Private legal reply: ${planned.san} from ${planned.from} to ${planned.to}.`,
-        'Do not invent another move. Never write raw SAN or square names — capitalize file letters and separate from digits: "knight to F 3" not "Nf3", "the E file" not "e-file", "E 4" not "e4".',
-      ].join(' ')
-      : `${buildCoachInstruction(coach, difficulty, 'move')} Give a useful chess-class explanation of the current position.`;
-
-    debugLog('makeCoachMove', `prompt="${prompt}" dynamicInfo="${dynamicInfo}"`);
-    const spoken = await chessConvai.speakCoachMessage(coach, prompt, dynamicInfo);
-    if (spoken) setCoachLine(spoken);
+    const dynamicInfo = buildDynamicCoachInfo(next, planned, playerMove, coach, difficulty, moveHistory);
+    const speech = analyzeCoachMoveContext(next, planned, playerMove, difficulty, moveHistory);
+    debugLog('makeCoachMove', `planned="${planned?.san ?? 'none'}" lastMove="${playerMove?.san ?? 'none'}" speech=${speech.shouldSpeak ? 'yes' : 'no'} reason=${speech.reason} phase=${speech.phase} moveNo=${Number(next.fen().split(' ')[5])} fen="${next.fen()}"`);
+    if (speech.shouldSpeak) {
+      const prompt = [
+        'Please coach the current chess position if there is a meaningful teaching point.',
+        'Do not say "Human:", "System:", "User:", or quote any instructions.',
+        'Do not describe the move that was just made or announce my reply unless that reply is the lesson.',
+        'If there is no useful teaching point, stay silent.',
+      ].join(' ');
+      const spoken = await chessConvai.speakCoachMessage(
+        coach,
+        prompt,
+        `${buildCoachInstruction(coach, difficulty, 'move')} ${dynamicInfo}`,
+      );
+      if (spoken) setCoachLine(spoken);
+    } else {
+      await chessConvai.updateCoachContext(coach, `${buildCoachInstruction(coach, difficulty, 'move')} ${dynamicInfo}`);
+    }
 
     if (planned) {
       const fenBefore = next.fen();
       const applied = next.move(planned);
       if (applied) {
+        const coachRecord = toRecord(applied, coach.name, fenBefore, next.fen());
+        debugLog('App', `Coach move applied: ${applied.san} (${applied.from}→${applied.to}) moveNo=${Number(next.fen().split(' ')[5])} fen="${next.fen()}"`);
         setGame(next);
-        setHistory((moves) => [...moves, toRecord(applied, coach.name, fenBefore, next.fen())]);
+        setHistory((moves) => [...moves, coachRecord]);
+        const afterReplyInfo = buildDynamicCoachInfo(next, null, applied, coach, difficulty, [...moveHistory, coachRecord]);
+        void chessConvai.updateCoachContext(coach, `${buildCoachInstruction(coach, difficulty, 'move')} ${afterReplyInfo}`);
       }
     }
     setThinking(false);
@@ -370,6 +404,7 @@ function ChessGame({
         <div className="topbar-actions">
           <span>{difficulty.label}</span>
           <button onClick={() => setChatOpen((open) => !open)}>Chat</button>
+          <MicButton />
         </div>
       </header>
 
@@ -420,6 +455,7 @@ function ChessGame({
         <section className="chat-drawer" aria-label={`Chat with ${coach.name}`}>
           <div className="chat-drawer-header">
             <strong>Ask {coach.name}</strong>
+            <MicButton className="chat-mic" />
             <button onClick={() => setChatOpen(false)}>Minimize</button>
           </div>
           <textarea
@@ -493,18 +529,49 @@ function ChessBoard({
   );
 }
 
+const PUZZLE_GROUP_SIZE = 5;
+
 function PuzzleScreen({ coachId, difficultyId, onBack }: { coachId: CoachId; difficultyId: DifficultyId; onBack: () => void }) {
   const coach = getCoach(coachId);
-  const filtered = PUZZLES.filter((puzzle) => puzzle.difficultyId === difficultyId);
-  const puzzles = filtered.length >= 3 ? filtered : PUZZLES;
-  const [index, setIndex] = useState(0);
-  const puzzle = puzzles[index % puzzles.length];
+  const allForDifficulty = useMemo(
+    () => PUZZLES.filter((puzzle) => puzzle.difficultyId === difficultyId),
+    [difficultyId],
+  );
+  const [completedIds, setCompletedIds] = useState<string[]>(
+    () => loadPuzzleProgress()[difficultyId] ?? [],
+  );
+
+  function buildBatch(completed: string[]): string[] {
+    const completedSet = new Set(completed);
+    const fresh = allForDifficulty.filter((puzzle) => !completedSet.has(puzzle.id));
+    return fresh.slice(0, PUZZLE_GROUP_SIZE).map((puzzle) => puzzle.id);
+  }
+
+  const [batchIds, setBatchIds] = useState<string[]>(() => buildBatch(completedIds));
+  const [batchPos, setBatchPos] = useState(0);
+  const [wrongInBatch, setWrongInBatch] = useState<string[]>([]);
+  const [showIntro, setShowIntro] = useState(true);
+  const [reviewMode, setReviewMode] = useState(false);
+  const [reviewIds, setReviewIds] = useState<string[]>([]);
+  const [reviewPos, setReviewPos] = useState(0);
+  const [groupComplete, setGroupComplete] = useState(false);
+
+  const activePuzzleId = reviewMode ? reviewIds[reviewPos] : batchIds[batchPos];
+  const allDone = batchIds.length === 0;
+  const fallbackPuzzle = allForDifficulty[0] ?? PUZZLES[0];
+  const puzzle = useMemo(
+    () => allForDifficulty.find((item) => item.id === activePuzzleId) ?? fallbackPuzzle,
+    [allForDifficulty, activePuzzleId, fallbackPuzzle],
+  );
   const [game, setGame] = useState(() => new Chess(puzzle.fen));
   const [selected, setSelected] = useState<Square | null>(null);
   const [hintsUsed, setHintsUsed] = useState(0);
   const [score, setScore] = useState(0);
   const [streak, setStreak] = useState(0);
   const [feedback, setFeedback] = useState('');
+  const [chatOpen, setChatOpen] = useState(false);
+  const [chatInput, setChatInput] = useState('');
+  const [puzzleSolved, setPuzzleSolved] = useState(false);
   const [coachReady, setCoachReady] = useState(false);
   const [avatarReady, setAvatarReady] = useState(false);
   const [loadingProgress, setLoadingProgress] = useState(10);
@@ -559,7 +626,8 @@ function PuzzleScreen({ coachId, difficultyId, onBack }: { coachId: CoachId; dif
     setSelected(null);
     setHintsUsed(0);
     setFeedback('');
-  }, [puzzle]);
+    setPuzzleSolved(false);
+  }, [puzzle, activePuzzleId]);
 
   const legalMoves = useMemo(() => selected ? legalTargets(game.fen(), selected) : [], [game, selected]);
 
@@ -595,13 +663,22 @@ function PuzzleScreen({ coachId, difficultyId, onBack }: { coachId: CoachId; dif
           const bonus = hintsUsed === 0 && (streak + 1) % 5 === 0 ? 50 : 0;
           setScore((v) => v + earned + bonus);
           setStreak((v) => hintsUsed === 0 ? v + 1 : 0);
-          debugLog('PuzzleScreen', `Correct move — asking coach to explain. bonus=${bonus}`);
-          const prompt = `The student just played the correct move ${move.san} in the puzzle "${puzzle.title}" (theme: ${puzzle.theme}). ${puzzle.explanation} Give a short congratulatory teaching line.`;
+          debugLog('PuzzleScreen', `Correct move — brief praise. bonus=${bonus}`);
+          markPuzzleCompleted(difficultyId, puzzle.id);
+          setCompletedIds((prev) => prev.includes(puzzle.id) ? prev : [...prev, puzzle.id]);
+          const isReview = reviewMode;
+          const prompt = isReview
+            ? `The student is revisiting a puzzle they got wrong. They just played the correct move (theme: ${puzzle.theme}). ${puzzle.explanation} Give one brief teaching sentence explaining why that move works. Do not say "great job" or generic praise — name the chess idea.`
+            : `The student played the correct move in a puzzle (theme: ${puzzle.theme}). Give only a very short confirmation: 1-5 words max. For example: "Good eye.", "Exactly.", "That's it.", "Nice find." Do not explain the move unless this is a review session.`;
           void chessConvai.speakCoachMessage(coach, prompt, `Puzzle theme: ${puzzle.theme}. Side to move: ${puzzle.sideToMove}.`);
+          setPuzzleSolved(true);
         } else {
           setStreak(0);
+          if (!reviewMode) {
+            setWrongInBatch((prev) => prev.includes(puzzle.id) ? prev : [...prev, puzzle.id]);
+          }
           debugLog('PuzzleScreen', `Incorrect move ${move.san} — correct was ${puzzle.solution[0]}`);
-          const prompt = `The student played ${move.san} but the correct move was ${puzzle.solution[0]} in the puzzle "${puzzle.title}" (theme: ${puzzle.theme}). ${puzzle.explanation} Give a brief corrective teaching line.`;
+          const prompt = `The student made a wrong move in a puzzle (theme: ${puzzle.theme}). Give only a single short line flagging the mistake, for example: "Uh oh — not the best move there. We will revisit this one." Do not reveal the correct answer. Do not explain the position. Keep it to one brief sentence.`;
           void chessConvai.speakCoachMessage(coach, prompt, `Puzzle theme: ${puzzle.theme}. Side to move: ${puzzle.sideToMove}.`);
         }
         setGame(next);
@@ -619,17 +696,71 @@ function PuzzleScreen({ coachId, difficultyId, onBack }: { coachId: CoachId; dif
     debugLog('PuzzleScreen', `Hint requested — level ${next}`);
     const hintText = puzzle.hints[next - 1] ?? '';
     const prompt = [
-      `The student asked for hint level ${next} of 3 in puzzle "${puzzle.title}" (theme: ${puzzle.theme}).`,
-      next < 3 ? 'Do not reveal the exact move.' : `You may reveal the move: ${puzzle.solution[0]}.`,
-      hintText,
-      'Give 1-2 teaching sentences. Do not read raw square notation aloud.',
-    ].join(' ');
+      `The student asked for hint level ${next} of 3. Puzzle theme: ${puzzle.theme}.`,
+      next === 1 ? 'Give only a directional clue — point to a region of the board or type of move. Do not name the piece or square.' : '',
+      next === 2 ? 'Name the tactical or strategic idea (for example: pin, fork, outpost, open file). Do not reveal the piece or destination square.' : '',
+      next === 3 ? `Reveal the move. Use natural language only — no raw chess notation. Say the piece name and the target square using a capital letter for the file and a space before the rank number. For example: "Move your knight to F 3" or "Take with your bishop on E 5". The solution square is ${puzzle.solution[0]}.` : '',
+      `Teaching context: ${hintText}`,
+      'Give exactly 1-2 sentences. Do not pad with encouragement.',
+    ].filter(Boolean).join(' ');
     void chessConvai.speakCoachMessage(coach, prompt, `Puzzle theme: ${puzzle.theme}. Side to move: ${puzzle.sideToMove}.`);
   }
 
+  function startNextBatch(extraCompleted: string[] = []) {
+    const updatedCompleted = Array.from(new Set([...completedIds, ...extraCompleted]));
+    const nextBatch = buildBatch(updatedCompleted);
+    debugLog('PuzzleScreen', `Starting next batch — fresh count=${nextBatch.length}`);
+    setBatchIds(nextBatch);
+    setBatchPos(0);
+    setWrongInBatch([]);
+    setGroupComplete(false);
+    setReviewMode(false);
+    setReviewIds([]);
+    setReviewPos(0);
+  }
+
   function nextPuzzle() {
-    debugLog('PuzzleScreen', `Advancing to puzzle index ${index + 1}`);
-    setIndex((v) => v + 1);
+    if (reviewMode) {
+      if (reviewPos + 1 < reviewIds.length) {
+        setReviewPos((v) => v + 1);
+      } else {
+        debugLog('PuzzleScreen', 'Review complete — starting next batch');
+        startNextBatch();
+      }
+      return;
+    }
+    if (batchPos + 1 < batchIds.length) {
+      debugLog('PuzzleScreen', `Advancing to batch position ${batchPos + 1}/${batchIds.length}`);
+      setBatchPos((v) => v + 1);
+    } else {
+      debugLog('PuzzleScreen', 'Batch finished — showing group-complete screen');
+      setGroupComplete(true);
+    }
+  }
+
+  function startReview() {
+    if (wrongInBatch.length === 0) {
+      startNextBatch();
+      return;
+    }
+    debugLog('PuzzleScreen', `Starting review — ${wrongInBatch.length} puzzles to revisit`);
+    setReviewIds(wrongInBatch);
+    setReviewPos(0);
+    setReviewMode(true);
+    setGroupComplete(false);
+  }
+
+  function resetProgress() {
+    debugLog('PuzzleScreen', `Resetting puzzle progress for difficulty=${difficultyId}`);
+    resetPuzzleProgress(difficultyId);
+    setCompletedIds([]);
+    setBatchIds(buildBatch([]));
+    setBatchPos(0);
+    setWrongInBatch([]);
+    setGroupComplete(false);
+    setReviewMode(false);
+    setReviewIds([]);
+    setReviewPos(0);
   }
 
   if (!ready) {
@@ -644,30 +775,159 @@ function PuzzleScreen({ coachId, difficultyId, onBack }: { coachId: CoachId; dif
     );
   }
 
+  if (showIntro) {
+    const sideLabel = puzzle.sideToMove === 'w' ? 'White' : 'Black';
+    return (
+      <main className="game-screen">
+        <header className="topbar">
+          <button onClick={onBack}>Menu</button>
+          <h1>Puzzles with AI</h1>
+        </header>
+        <div className="puzzle-intro-overlay">
+          <div className="puzzle-intro-card panel-card">
+            <p className="eyebrow">Puzzle Challenge</p>
+            <h2>Find the best move for {sideLabel}</h2>
+            <ul className="puzzle-intro-rules">
+              <li>Tap a piece, then tap where you want it to go.</li>
+              <li>You can ask for up to 3 hints per puzzle.</li>
+              <li>After {PUZZLE_GROUP_SIZE} puzzles, you can review the ones you got wrong.</li>
+              <li>The coach will stay quiet during routine moves — listen when they speak.</li>
+            </ul>
+            <button className="primary-action" onClick={() => setShowIntro(false)}>Start puzzles</button>
+          </div>
+        </div>
+      </main>
+    );
+  }
+
+  if (allDone) {
+    const totalForDifficulty = allForDifficulty.length;
+    return (
+      <main className="game-screen">
+        <header className="topbar">
+          <button onClick={onBack}>Menu</button>
+          <h1>Puzzles with AI</h1>
+          <div className="topbar-actions"><span>{score} pts</span></div>
+        </header>
+        <div className="puzzle-intro-overlay">
+          <div className="puzzle-intro-card panel-card">
+            <p className="eyebrow">All Done</p>
+            <h2>You finished every {getDifficulty(difficultyId).label} puzzle</h2>
+            <p>You've solved all {totalForDifficulty} puzzles at this difficulty. Try a harder level from the menu, or reset to replay them.</p>
+            <div className="puzzle-group-actions">
+              <button className="primary-action" onClick={onBack}>Back to menu</button>
+              <button className="ghost-action" onClick={resetProgress}>Reset progress</button>
+            </div>
+          </div>
+        </div>
+      </main>
+    );
+  }
+
+  if (groupComplete) {
+    const wrongCount = wrongInBatch.length;
+    const batchSize = batchIds.length;
+    const cleanCount = batchSize - wrongCount;
+    return (
+      <main className="game-screen">
+        <header className="topbar">
+          <button onClick={onBack}>Menu</button>
+          <h1>Puzzles with AI</h1>
+          <div className="topbar-actions"><span>{score} pts</span></div>
+        </header>
+        <div className="puzzle-intro-overlay">
+          <div className="puzzle-intro-card panel-card">
+            <p className="eyebrow">Batch Complete</p>
+            <h2>{cleanCount} of {batchSize} solved cleanly</h2>
+            {wrongCount > 0
+              ? <p>You have {wrongCount} puzzle{wrongCount > 1 ? 's' : ''} to revisit. Review them now for extra learning, or skip ahead.</p>
+              : <p>Clean sweep — no mistakes. Moving on to the next batch.</p>
+            }
+            <div className="puzzle-group-actions">
+              {wrongCount > 0 && (
+                <button className="primary-action" onClick={startReview}>Review mistakes ({wrongCount})</button>
+              )}
+              <button className="ghost-action" onClick={() => startNextBatch()}>
+                {wrongCount > 0 ? 'Skip review' : 'Next batch'}
+              </button>
+            </div>
+          </div>
+        </div>
+      </main>
+    );
+  }
+
+  async function sendPuzzleChat() {
+    const text = chatInput.trim();
+    if (!text) return;
+    setChatInput('');
+    const dynamicInfo = `Puzzle theme: ${puzzle.theme}. Side to move: ${puzzle.sideToMove}. Position FEN: ${puzzle.fen}.`;
+    const spoken = await chessConvai.sendUserChat(
+      coach,
+      getDifficulty(difficultyId),
+      text,
+      dynamicInfo,
+    );
+    if (spoken) setFeedback(spoken);
+  }
+
   return (
     <main className="game-screen">
       <header className="topbar">
         <button onClick={onBack}>Menu</button>
-        <h1>Puzzles with AI</h1>
+        <h1>{reviewMode ? 'Review Mode' : 'Puzzles'}</h1>
         <div className="topbar-actions">
           <span>{score} pts</span>
-          <span>{streak} streak</span>
+          {streak > 0 && <span>{streak} streak</span>}
+          {!reviewMode && <span>{batchPos + 1}/{batchIds.length}</span>}
+          {reviewMode && <span>{reviewPos + 1}/{reviewIds.length}</span>}
+          <span title="Total progress for this difficulty">{completedIds.length}/{allForDifficulty.length}</span>
+          <button onClick={() => setChatOpen((o) => !o)}>Chat</button>
+          <MicButton />
         </div>
       </header>
       <div className="training-layout">
         <div className="puzzle-left-col">
-          <CoachCard coach={coach} status={`${puzzle.theme} · ${puzzle.title}`} lastLine={feedback || undefined} />
+          <CoachCard coach={coach} status={coach.name} lastLine={feedback || undefined} />
+          <div className="puzzle-theme-label">
+            <span className="eyebrow">{reviewMode ? 'Review' : puzzle.theme}</span>
+            <strong>{puzzle.title}</strong>
+          </div>
           <div className="puzzle-actions">
-            <button className="primary-action" onClick={() => void askPuzzleHint()} disabled={hintsUsed >= 3}>
+            <button className="primary-action" onClick={() => void askPuzzleHint()} disabled={hintsUsed >= 3 || puzzleSolved}>
               Hint {hintsUsed > 0 ? `(${hintsUsed}/3)` : ''}
             </button>
-            <button className="ghost-action" onClick={nextPuzzle}>Next puzzle</button>
+            <button className="ghost-action" onClick={nextPuzzle}>
+              {reviewMode ? (reviewPos + 1 < reviewIds.length ? 'Next' : 'Finish review') : puzzleSolved ? 'Next Puzzle' : 'Skip'}
+            </button>
           </div>
         </div>
         <section className="game-stage puzzle-board-stage">
           <ChessBoard game={game} selected={selected} legalMoves={legalMoves} onSquareClick={(sq) => void handlePuzzleSquare(sq)} />
         </section>
       </div>
+
+      {chatOpen && (
+        <section className="chat-drawer" aria-label={`Chat with ${coach.name}`}>
+          <div className="chat-drawer-header">
+            <strong>Ask {coach.name}</strong>
+            <MicButton className="chat-mic" />
+            <button onClick={() => setChatOpen(false)}>Minimize</button>
+          </div>
+          <textarea
+            value={chatInput}
+            onChange={(event) => setChatInput(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter' && !event.shiftKey) {
+                event.preventDefault();
+                void sendPuzzleChat();
+              }
+            }}
+            placeholder="Ask about the puzzle..."
+          />
+          <button className="primary-action" onClick={() => void sendPuzzleChat()}>Send</button>
+        </section>
+      )}
     </main>
   );
 }
@@ -901,9 +1161,12 @@ function pieceName(piece: string) {
 
 function buildHintText(level: number, best: Move | null, coachName: string) {
   if (!best) return `${coachName}: Look for checks, captures, and threats before choosing a quiet move.`;
-  if (level === 1) return `${coachName}: Start with forcing moves and notice which of your pieces can become active.`;
-  if (level === 2) return `${coachName}: The idea involves your ${pieceName(best.piece).toLowerCase()} creating immediate pressure.`;
-  return `${coachName}: Try ${best.san}. It is the engine's clearest continuation here.`;
+  if (level === 1) return `${coachName}: Start with forcing moves — which of your pieces can become more active?`;
+  if (level === 2) return `${coachName}: The idea involves your ${pieceName(best.piece).toLowerCase()} — look for a square where it creates immediate pressure.`;
+  const toFile = best.to[0].toUpperCase();
+  const toRank = best.to[1];
+  const action = best.captured ? 'takes' : 'to';
+  return `${coachName}: Move your ${pieceName(best.piece).toLowerCase()} ${action} ${toFile} ${toRank}. That is the best move in this position.`;
 }
 
 function getStatus(game: Chess, coachName: string) {

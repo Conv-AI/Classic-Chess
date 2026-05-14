@@ -71,3 +71,32 @@ export function deleteSession(id: string): void {
 export function createSessionId(): string {
   return `game-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
+
+const PUZZLE_PROGRESS_KEY = 'classic-chess.puzzleProgress.v1';
+
+export type PuzzleProgress = Partial<Record<DifficultyId, string[]>>;
+
+export function loadPuzzleProgress(): PuzzleProgress {
+  try {
+    const raw = window.localStorage.getItem(PUZZLE_PROGRESS_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+export function markPuzzleCompleted(difficulty: DifficultyId, puzzleId: string): void {
+  const progress = loadPuzzleProgress();
+  const existing = progress[difficulty] ?? [];
+  if (existing.includes(puzzleId)) return;
+  progress[difficulty] = [...existing, puzzleId];
+  window.localStorage.setItem(PUZZLE_PROGRESS_KEY, JSON.stringify(progress));
+}
+
+export function resetPuzzleProgress(difficulty: DifficultyId): void {
+  const progress = loadPuzzleProgress();
+  delete progress[difficulty];
+  window.localStorage.setItem(PUZZLE_PROGRESS_KEY, JSON.stringify(progress));
+}
