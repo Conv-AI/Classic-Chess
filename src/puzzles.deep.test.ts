@@ -125,7 +125,7 @@ function firstPieceAlongRay(
   from: Square,
   df: number,
   dr: number,
-): { square: Square; piece: ReturnType<Chess['get']> } | null {
+): { square: Square; piece: NonNullable<ReturnType<Chess['get']>> } | null {
   let f = FILE_TO_INDEX(from[0]) + df;
   let r = RANK_TO_INDEX(from[1]) + dr;
   while (inBoard(f, r)) {
