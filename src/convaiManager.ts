@@ -20,6 +20,7 @@ type CoachConnection = {
   connected: boolean;
   connecting: boolean;
   botReady: boolean;
+  connectedAt: number;
   isSpeaking: boolean;
   streamBuffer: string;
   lastEmittedText: string;
@@ -43,6 +44,7 @@ function createConnection(coach: CoachConfig): CoachConnection {
     connected: false,
     connecting: false,
     botReady: false,
+    connectedAt: 0,
     isSpeaking: false,
     streamBuffer: '',
     lastEmittedText: '',
@@ -60,6 +62,7 @@ function createConnection(coach: CoachConfig): CoachConnection {
 }
 
 class ChessConvaiManager {
+  private readonly staleReadyMs = 8000;
   private pool = new Map<CoachId, CoachConnection>();
   private activeCoachId: CoachId = 'arjun';
   private speakingCoachId: CoachId | '' = '';
@@ -74,13 +77,26 @@ class ChessConvaiManager {
     for (const coach of COACHES) this.pool.set(coach.id, createConnection(coach));
   }
 
-  async connectCoach(coach: CoachConfig): Promise<void> {
+  async connectCoach(
+    coach: CoachConfig,
+    options: { waitForBotReady?: boolean; readyWaitMs?: number; reconnectIfStale?: boolean } = {},
+  ): Promise<void> {
     this.activeCoachId = coach.id;
     const conn = this.pool.get(coach.id);
     if (!conn) return;
     await this.disconnectOtherCoaches(coach.id);
     if (conn.connecting || conn.connected) {
-      await this.waitForReady(conn, 12000);
+      if (conn.connected && options.reconnectIfStale && this.isReadyStale(conn)) {
+        debugLog('Convai', `[${coach.name}] BOT READY stale after connect; reconnecting before speech`);
+        await this.disconnectOne(conn);
+      } else {
+        if (options.waitForBotReady) await this.waitForReady(conn, options.readyWaitMs ?? 3000);
+        this.emitStatus();
+        return;
+      }
+    }
+    if (conn.connecting) {
+      if (options.waitForBotReady) await this.waitForReady(conn, options.readyWaitMs ?? 3000);
       this.emitStatus();
       return;
     }
@@ -103,7 +119,7 @@ class ChessConvaiManager {
         characterId: coach.characterId,
         enableLipsync: true,
         enableEmotion: true,
-        blendshapeConfig: { format: 'arkit' },
+        blendshapeConfig: { format: 'arkit', frames_buffer_duration: 0.25 },
         ttsEnabled: true,
         startWithAudioOn: false,
         keepInContext: false,
@@ -156,9 +172,8 @@ class ChessConvaiManager {
             // lastSpeechEndedAt then, so the speech queue stays gated.
             setTimeout(() => {
               if (!conn.isSpeaking) {
-                conn.lipsyncActive = false;
                 this.lastSpeechEndedAt = Date.now();
-                if (this.speakingCoachId === conn.coach.id) this.speakingCoachId = '';
+                this.finishLipsyncIfEnded(conn);
                 this.emitStatus();
               }
             }, 1000);
@@ -186,9 +201,19 @@ class ChessConvaiManager {
         this.captureLatestText(conn);
       }));
 
+      conn.unsubFns.push(client.on('blendshapes', () => {
+        conn.lipsyncActive = true;
+        this.speakingCoachId = conn.coach.id;
+      }));
+
+      conn.unsubFns.push(client.on('blendshapeStatsReceived', () => {
+        if (!conn.isSpeaking) this.finishLipsyncIfEnded(conn);
+      }));
+
       await client.connect();
       conn.client = client;
       conn.connected = true;
+      conn.connectedAt = Date.now();
 
       try {
         conn.audioRenderer = new AudioRenderer(client.room);
@@ -205,7 +230,7 @@ class ChessConvaiManager {
         });
       }, 1500);
 
-      await this.waitForReady(conn, 20000);
+      if (options.waitForBotReady) await this.waitForReady(conn, options.readyWaitMs ?? 5000);
     } catch (err) {
       debugLog('Convai', `[${coach.name}] Connection failed:`, err);
     } finally {
@@ -233,17 +258,17 @@ class ChessConvaiManager {
   async speakCoachMessage(coach: CoachConfig, message: string, dynamicInfo: string): Promise<string> {
     return this.runExclusiveSpeech(async () => {
       this.activeCoachId = coach.id;
-      await this.connectCoach(coach);
+      await this.connectCoach(coach, { waitForBotReady: true, readyWaitMs: 3500, reconnectIfStale: true });
       // Wait longer for any previous TTS to fully render. Sending a new user message while
       // Convai is still streaming audio causes it to abort the prior turn mid-sentence.
-      await this.waitForGlobalSilence(`${coach.name} turn preflight`, 600, 6000);
+      await this.waitForGlobalSilence(`${coach.name} turn preflight`, 350, 1500);
       let response = await this.sendAndAwaitSpeech(coach, message, dynamicInfo);
       if (!response.trim()) {
         const conn = this.pool.get(coach.id);
         if (conn) {
           debugLog('Convai', `[${coach.name}] Empty response, reconnecting once`);
           await this.disconnectOne(conn);
-          await this.connectCoach(coach);
+          await this.connectCoach(coach, { waitForBotReady: true, readyWaitMs: 3500 });
           response = await this.sendAndAwaitSpeech(coach, message, dynamicInfo);
         }
       }
@@ -293,9 +318,11 @@ class ChessConvaiManager {
         conn.lipsyncAccum -= 1;
       } else {
         conn.lipsyncAccum = 0;
+        this.finishLipsyncIfEnded(conn);
         break;
       }
     }
+    if (!frame) this.finishLipsyncIfEnded(conn);
     return frame;
   }
 
@@ -364,17 +391,25 @@ class ChessConvaiManager {
     const conn = this.pool.get(coach.id);
     if (!conn?.client || !conn.connected) return '';
 
-    await this.waitForReady(conn, 2500);
-    if (!conn.botReady) debugLog('Convai', `[${coach.name}] BOT READY still pending; sending anyway`);
+    await this.waitForReady(conn, 2000);
+    if (!conn.botReady && this.isReadyStale(conn)) {
+      debugLog('Convai', `[${coach.name}] BOT READY still pending on stale session; reconnecting`);
+      await this.disconnectOne(conn);
+      await this.connectCoach(coach, { waitForBotReady: true, readyWaitMs: 3500 });
+    }
 
-    conn.client.updateDynamicInfo(dynamicInfo);
-    this.resetResponseState(conn);
+    const readyConn = this.pool.get(coach.id);
+    if (!readyConn?.client || !readyConn.connected) return '';
+    if (!readyConn.botReady) debugLog('Convai', `[${coach.name}] BOT READY still pending; sending anyway`);
+
+    readyConn.client.updateDynamicInfo(dynamicInfo);
+    this.resetResponseState(readyConn);
     this.activeCoachId = coach.id;
 
-    const sessionId = conn.client.conversationSessionId ?? 'unknown';
+    const sessionId = readyConn.client.conversationSessionId ?? 'unknown';
     debugLog('Convai', `[${coach.name}] Speaking session=${sessionId}: "${message.slice(0, 100)}"`);
-    conn.client.sendUserTextMessage(message);
-    const response = await this.waitForResponseCompletion(conn);
+    readyConn.client.sendUserTextMessage(message);
+    const response = await this.waitForResponseCompletion(readyConn);
     debugLog('Convai', `[${coach.name}] Speech done. Response: "${response.slice(0, 100)}"`);
     return response;
   }
@@ -386,12 +421,13 @@ class ChessConvaiManager {
     conn.hasFlushed = false;
     conn.turnEnded = false;
     conn.lastTurnEndAt = 0;
+    this.resetLipsyncState(conn);
   }
 
   private async waitForResponseCompletion(conn: CoachConnection): Promise<string> {
     let everSpoke = false;
-    for (let i = 0; i < 40; i++) {
-      await this.sleep(400);
+    for (let i = 0; i < 20; i++) {
+      await this.sleep(250);
       if (conn.turnEnded) break;
       if (conn.isSpeaking) {
         everSpoke = true;
@@ -402,37 +438,34 @@ class ChessConvaiManager {
     }
 
     if (!everSpoke && !conn.lastEmittedText && !conn.turnEnded) {
-      await this.waitForTurnEndOrFirstText(conn, 5000);
+      await this.waitForTurnEndOrFirstText(conn, 2500);
       if (conn.isSpeaking) everSpoke = true;
     }
 
     if (conn.isSpeaking || everSpoke) {
       let silentMs = 0;
-      // Up to ~45 s total. Convai's `turnEnd` event is the canonical "the bot is fully done"
-      // signal, so we wait for it (plus 800 ms of silence to let the final audio chunk render).
-      // The silence-only fallback is now 6 s instead of 1.4 s — natural pauses between
-      // sentences can comfortably exceed 1.4 s and were being mis-read as end-of-speech,
-      // which let the next user message fire and chop the bot's TTS mid-sentence.
-      for (let i = 0; i < 90; i++) {
+      // Prefer Convai's turn-end signal, but keep a short silence fallback so a missing
+      // turnEnd event does not make the chess move feel frozen after the coach has spoken.
+      for (let i = 0; i < 50; i++) {
         await this.sleep(500);
         if (!conn.isSpeaking) {
           silentMs += 500;
           if (conn.turnEnded && silentMs >= 800) break;
-          if (silentMs >= 6000) break;
+          if (silentMs >= 2500) break;
         } else {
           silentMs = 0;
         }
       }
-      await this.waitForTurnEndOrStableText(conn, 3500, 1000);
+      await this.waitForTurnEndOrStableText(conn, 2500, 700);
     } else if (conn.lastEmittedText) {
-      await this.waitForTurnEndOrStableText(conn, 4500, 1200);
+      await this.waitForTurnEndOrStableText(conn, 2500, 700);
     }
 
     this.lastSpeechEndedAt = Date.now();
     this.captureLatestText(conn);
     // Slightly larger post-speech silence window so any straggling audio finishes before
     // the speech queue releases the next entry.
-    await this.waitForGlobalSilence(`${conn.coach.name} post-speech`, 500, 2500);
+    await this.waitForGlobalSilence(`${conn.coach.name} post-speech`, 300, 1200);
     return this.getBestResponseText(conn);
   }
 
@@ -530,6 +563,32 @@ class ChessConvaiManager {
     }
   }
 
+  private isReadyStale(conn: CoachConnection): boolean {
+    return conn.connected && !conn.botReady && conn.connectedAt > 0 && Date.now() - conn.connectedAt >= this.staleReadyMs;
+  }
+
+  private resetLipsyncState(conn: CoachConnection): void {
+    conn.lipsyncIndex = 0;
+    conn.lipsyncLastTime = 0;
+    conn.lipsyncAccum = 0;
+    conn.lipsyncActive = false;
+    conn.lastConversationId = -1;
+    try { conn.client?.blendshapeQueue?.reset?.(); } catch {}
+    if (this.speakingCoachId === conn.coach.id) this.speakingCoachId = '';
+  }
+
+  private finishLipsyncIfEnded(conn: CoachConnection): boolean {
+    const queue = conn.client?.blendshapeQueue;
+    const ended = Boolean(queue?.isConversationEnded?.());
+    if (!ended) return false;
+    conn.lipsyncActive = false;
+    conn.lipsyncLastTime = 0;
+    conn.lipsyncAccum = 0;
+    if (this.speakingCoachId === conn.coach.id) this.speakingCoachId = '';
+    this.emitStatus();
+    return true;
+  }
+
   private async disconnectOne(conn: CoachConnection): Promise<void> {
     for (const unsub of conn.unsubFns) {
       try { unsub(); } catch {}
@@ -545,8 +604,9 @@ class ChessConvaiManager {
     }
     conn.connected = false;
     conn.botReady = false;
+    conn.connectedAt = 0;
     conn.isSpeaking = false;
-    conn.lipsyncActive = false;
+    this.resetLipsyncState(conn);
     conn.streamBuffer = '';
     conn.lastEmittedText = '';
     conn.longestResponseText = '';
