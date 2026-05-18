@@ -3,6 +3,7 @@ import { COACHES, type CoachConfig, type CoachId, type DifficultyConfig } from '
 import { debugLog } from './debugLog';
 
 const API_KEY = import.meta.env.VITE_CONVAI_API_KEY as string;
+const SUPPRESSED_RESPONSE_PATTERN = /\b(silent|human)\b/i;
 
 export type ConvaiResponse = {
   coachId: CoachId;
@@ -25,6 +26,8 @@ type CoachConnection = {
   streamBuffer: string;
   lastEmittedText: string;
   longestResponseText: string;
+  responseSuppressed: boolean;
+  responseSuppressedReason: string;
   hasFlushed: boolean;
   unsubFns: Array<() => void>;
   lipsyncIndex: number;
@@ -49,6 +52,8 @@ function createConnection(coach: CoachConfig): CoachConnection {
     streamBuffer: '',
     lastEmittedText: '',
     longestResponseText: '',
+    responseSuppressed: false,
+    responseSuppressedReason: '',
     hasFlushed: false,
     unsubFns: [],
     lipsyncIndex: 0,
@@ -133,6 +138,11 @@ class ChessConvaiManager {
             debugLog('Convai', `[${coach.name}] MSG type="${type}" content="${String(content).slice(0, 80)}"`);
           }
           if (type === 'bot-llm-text' && content) {
+            const suppressedWord = this.getSuppressedResponseWord(content);
+            if (suppressedWord) {
+              this.suppressResponse(conn, suppressedWord);
+              return;
+            }
             conn.streamBuffer = content;
             conn.lastEmittedText = content;
             if (content.length > conn.longestResponseText.length) conn.longestResponseText = content;
@@ -265,7 +275,9 @@ class ChessConvaiManager {
       let response = await this.sendAndAwaitSpeech(coach, message, dynamicInfo);
       if (!response.trim()) {
         const conn = this.pool.get(coach.id);
-        if (conn) {
+        if (conn?.responseSuppressed) {
+          debugLog('Convai', `[${coach.name}] Suppressed response skipped; applying move without speech`);
+        } else if (conn) {
           debugLog('Convai', `[${coach.name}] Empty response, reconnecting once`);
           await this.disconnectOne(conn);
           await this.connectCoach(coach, { waitForBotReady: true, readyWaitMs: 3500 });
@@ -418,6 +430,8 @@ class ChessConvaiManager {
     conn.lastEmittedText = '';
     conn.streamBuffer = '';
     conn.longestResponseText = '';
+    conn.responseSuppressed = false;
+    conn.responseSuppressedReason = '';
     conn.hasFlushed = false;
     conn.turnEnded = false;
     conn.lastTurnEndAt = 0;
@@ -428,6 +442,7 @@ class ChessConvaiManager {
     let everSpoke = false;
     for (let i = 0; i < 20; i++) {
       await this.sleep(250);
+      if (conn.responseSuppressed) return '';
       if (conn.turnEnded) break;
       if (conn.isSpeaking) {
         everSpoke = true;
@@ -439,6 +454,7 @@ class ChessConvaiManager {
 
     if (!everSpoke && !conn.lastEmittedText && !conn.turnEnded) {
       await this.waitForTurnEndOrFirstText(conn, 2500);
+      if (conn.responseSuppressed) return '';
       if (conn.isSpeaking) everSpoke = true;
     }
 
@@ -448,6 +464,7 @@ class ChessConvaiManager {
       // turnEnd event does not make the chess move feel frozen after the coach has spoken.
       for (let i = 0; i < 50; i++) {
         await this.sleep(500);
+        if (conn.responseSuppressed) return '';
         if (!conn.isSpeaking) {
           silentMs += 500;
           if (conn.turnEnded && silentMs >= 800) break;
@@ -473,6 +490,7 @@ class ChessConvaiManager {
     const start = Date.now();
     while (Date.now() - start < maxWaitMs) {
       await this.sleep(200);
+      if (conn.responseSuppressed) return;
       this.captureLatestText(conn);
       if (conn.turnEnded || conn.isSpeaking || conn.lastEmittedText || conn.longestResponseText || conn.streamBuffer) return;
     }
@@ -484,6 +502,7 @@ class ChessConvaiManager {
     let lastText = conn.longestResponseText || conn.lastEmittedText || conn.streamBuffer;
     while (Date.now() - start < maxWaitMs) {
       await this.sleep(200);
+      if (conn.responseSuppressed) return;
       const current = conn.longestResponseText || conn.lastEmittedText || conn.streamBuffer;
       if (current === lastText) {
         stableFor += 200;
@@ -497,6 +516,7 @@ class ChessConvaiManager {
   }
 
   private captureLatestText(conn: CoachConnection): void {
+    if (conn.responseSuppressed) return;
     if (this.streamDebounce) {
       clearTimeout(this.streamDebounce);
       this.streamDebounce = null;
@@ -511,15 +531,21 @@ class ChessConvaiManager {
   }
 
   private flushStream(conn: CoachConnection): void {
+    if (conn.responseSuppressed) return;
     this.captureLatestText(conn);
     const text = this.getBestResponseText(conn);
     if (!text) return;
+    this.emitResponse(conn, text);
+  }
+
+  private emitResponse(conn: CoachConnection, text: string): void {
     for (const listener of this.responseListeners) {
       listener({ coachId: conn.coach.id, characterName: conn.coach.name, text });
     }
   }
 
   private getBestResponseText(conn: CoachConnection): string {
+    if (conn.responseSuppressed) return '';
     const latest = conn.lastEmittedText.trim();
     const longest = conn.longestResponseText.trim();
     if (!latest) return longest;
@@ -567,6 +593,31 @@ class ChessConvaiManager {
     return conn.connected && !conn.botReady && conn.connectedAt > 0 && Date.now() - conn.connectedAt >= this.staleReadyMs;
   }
 
+  private getSuppressedResponseWord(text: string): string | null {
+    return text.match(SUPPRESSED_RESPONSE_PATTERN)?.[1]?.toLowerCase() ?? null;
+  }
+
+  private suppressResponse(conn: CoachConnection, word: string): void {
+    if (conn.responseSuppressed) return;
+    conn.responseSuppressed = true;
+    conn.responseSuppressedReason = word;
+    conn.streamBuffer = '';
+    conn.lastEmittedText = '';
+    conn.longestResponseText = '';
+    conn.turnEnded = true;
+    conn.lastTurnEndAt = Date.now();
+    if (this.streamDebounce) {
+      clearTimeout(this.streamDebounce);
+      this.streamDebounce = null;
+    }
+    try { conn.client?.sendInterruptMessage?.(); } catch {}
+    this.resetLipsyncState(conn);
+    this.lastSpeechEndedAt = Date.now();
+    this.emitResponse(conn, '');
+    this.emitStatus();
+    debugLog('Convai', `[${conn.coach.name}] Suppressed bot response containing "${word}"; interrupted audio`);
+  }
+
   private resetLipsyncState(conn: CoachConnection): void {
     conn.lipsyncIndex = 0;
     conn.lipsyncLastTime = 0;
@@ -610,6 +661,8 @@ class ChessConvaiManager {
     conn.streamBuffer = '';
     conn.lastEmittedText = '';
     conn.longestResponseText = '';
+    conn.responseSuppressed = false;
+    conn.responseSuppressedReason = '';
     conn.turnEnded = false;
     conn.lastTurnEndAt = 0;
     this.emitStatus();
