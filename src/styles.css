@@ -766,7 +766,27 @@ h2 {
 }
 
 .mode-grid {
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+
+@media (max-width: 1200px) {
+  .mode-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 820px) {
+  .mode-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 580px) {
+  .mode-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 .mode-tile,
@@ -1243,4 +1263,129 @@ h2 {
   flex-direction: column;
   gap: 0.5rem;
   margin-top: 0.5rem;
+}
+
+/* Premium Dialogue Dataset Styling */
+
+.caption-info {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1;
+}
+
+.add-dataset-btn {
+  background: rgba(216, 167, 79, 0.12);
+  border: 1px solid rgba(216, 167, 79, 0.35);
+  color: var(--gold);
+  border-radius: 10px;
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  font-size: 0.9rem;
+  cursor: pointer;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  flex-shrink: 0;
+  margin-left: 0.5rem;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+}
+
+.add-dataset-btn:hover {
+  background: linear-gradient(135deg, var(--gold), #f2cf80);
+  border-color: transparent;
+  color: #191713;
+  transform: translateY(-2px) scale(1.05);
+  box-shadow: 0 6px 16px rgba(216, 167, 79, 0.3);
+}
+
+.add-dataset-btn:active {
+  transform: translateY(0) scale(0.95);
+}
+
+/* Elegant Toast Notifications */
+.toast-notification {
+  position: fixed;
+  bottom: 28px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 1000;
+  background: rgba(25, 23, 19, 0.94);
+  border: 1px solid rgba(216, 167, 79, 0.6);
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.7), inset 0 0 12px rgba(216, 167, 79, 0.1);
+  padding: 0.8rem 1.8rem;
+  border-radius: 14px;
+  backdrop-filter: blur(12px);
+  animation: toastFadeIn 0.35s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  pointer-events: none;
+}
+
+.toast-notification span {
+  color: var(--cream);
+  font-family: "Trebuchet MS", sans-serif;
+  font-size: 0.85rem;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+}
+
+@keyframes toastFadeIn {
+  from {
+    opacity: 0;
+    transform: translate(-50%, 16px);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, 0);
+  }
+}
+
+/* Dialogue Dataset View Page & Option Cards */
+.dataset-option-btn {
+  border: 1px solid rgba(244, 234, 216, 0.12);
+  border-radius: 10px;
+  background: rgba(244, 234, 216, 0.04);
+  color: var(--cream);
+  cursor: pointer;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1);
+}
+
+.dataset-option-btn:hover {
+  background: rgba(244, 234, 216, 0.08) !important;
+  border-color: rgba(216, 167, 79, 0.35);
+  transform: translateX(3px);
+}
+
+.dataset-option-btn.selected-option {
+  background: rgba(216, 167, 79, 0.15) !important;
+  border-color: rgba(216, 167, 79, 0.72) !important;
+  box-shadow: 0 4px 12px rgba(216, 167, 79, 0.15);
+  transform: translateX(5px);
+}
+
+.dataset-details-panel {
+  animation: riseIn 400ms ease both;
+}
+
+.dataset-badge {
+  font-size: 0.72rem;
+  padding: 0.28rem 0.65rem;
+  border-radius: 6px;
+  font-weight: 900;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  transition: all 0.25s ease;
+}
+
+.badge-silent {
+  background-color: rgba(216, 167, 79, 0.12) !important;
+  border: 1px solid rgba(216, 167, 79, 0.35) !important;
+  color: var(--gold) !important;
+}
+
+.badge-speaking {
+  background-color: rgba(76, 175, 80, 0.12) !important;
+  border: 1px solid rgba(76, 175, 80, 0.35) !important;
+  color: #81c784 !important;
 }

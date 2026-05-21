@@ -20,7 +20,7 @@ function rotateLogIfTooLarge(): void {
   }
 }
 
-function logServerPlugin(): Plugin {
+function logServerPlugin(datasetToolsEnabled: boolean): Plugin {
   return {
     name: 'chess-log-server',
     configureServer(server) {
@@ -43,11 +43,97 @@ function logServerPlugin(): Plugin {
           res.end();
         });
       });
+
+      if (datasetToolsEnabled) {
+        const DATASET_FILE = path.resolve(__dirname, 'dataset.json');
+
+        server.middlewares.use('/api/dataset', (req, res) => {
+          if (req.method === 'GET') {
+            try {
+              if (fs.existsSync(DATASET_FILE)) {
+                const data = fs.readFileSync(DATASET_FILE, 'utf-8');
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(data);
+              } else {
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end('[]');
+              }
+            } catch {
+              res.writeHead(500);
+              res.end('Error reading dataset');
+            }
+            return;
+          }
+
+          if (req.method === 'POST') {
+            let body = '';
+            req.on('data', (chunk: Buffer) => { body += chunk.toString(); });
+            req.on('end', () => {
+              try {
+                const item = JSON.parse(body);
+                let dataset = [];
+                if (fs.existsSync(DATASET_FILE)) {
+                  dataset = JSON.parse(fs.readFileSync(DATASET_FILE, 'utf-8'));
+                }
+                dataset.push(item);
+                fs.writeFileSync(DATASET_FILE, JSON.stringify(dataset, null, 2), 'utf-8');
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ success: true, count: dataset.length }));
+              } catch (err) {
+                res.writeHead(400);
+                res.end('Invalid JSON or write error');
+              }
+            });
+            return;
+          }
+
+          if (req.method === 'DELETE') {
+            let body = '';
+            req.on('data', (chunk: Buffer) => { body += chunk.toString(); });
+            req.on('end', () => {
+              try {
+                const payload = JSON.parse(body);
+                if (payload.clearAll) {
+                  fs.writeFileSync(DATASET_FILE, '[]', 'utf-8');
+                  res.writeHead(200, { 'Content-Type': 'application/json' });
+                  res.end(JSON.stringify({ success: true, count: 0 }));
+                } else if (payload.timestamp) {
+                  let dataset = [];
+                  if (fs.existsSync(DATASET_FILE)) {
+                    dataset = JSON.parse(fs.readFileSync(DATASET_FILE, 'utf-8'));
+                  }
+                  const filtered = dataset.filter((d: any) => d.timestamp !== payload.timestamp);
+                  fs.writeFileSync(DATASET_FILE, JSON.stringify(filtered, null, 2), 'utf-8');
+                  res.writeHead(200, { 'Content-Type': 'application/json' });
+                  res.end(JSON.stringify({ success: true, count: filtered.length }));
+                } else {
+                  res.writeHead(400);
+                  res.end('Missing clearAll or timestamp');
+                }
+              } catch {
+                res.writeHead(400);
+                res.end('Invalid delete payload');
+              }
+            });
+            return;
+          }
+
+          res.writeHead(405);
+          res.end();
+        });
+      }
     },
   };
 }
 
-export default defineConfig({
-  base: './',
-  plugins: [react(), logServerPlugin()],
+export default defineConfig(({ mode }) => {
+  const datasetToolsEnabled = mode === 'dataset';
+
+  return {
+    base: './',
+    define: {
+      __DATASET_TOOLS_ENABLED__: JSON.stringify(datasetToolsEnabled),
+    },
+    plugins: [react(), logServerPlugin(datasetToolsEnabled)],
+  };
 });

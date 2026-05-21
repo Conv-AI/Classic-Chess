@@ -22,6 +22,7 @@ type Props = {
   onPuzzles: () => void;
   onGames: () => void;
   onCreator: () => void;
+  onDataset?: () => void;
 };
 
 export default function MenuScreen({
@@ -34,6 +35,7 @@ export default function MenuScreen({
   onPuzzles,
   onGames,
   onCreator,
+  onDataset,
 }: Props) {
   const [selectedMode, setSelectedMode] = useState<Mode>('quickplay');
   const selectedCoach = COACHES.find((coach) => coach.id === coachId) ?? COACHES[0];
@@ -80,6 +82,12 @@ export default function MenuScreen({
             <span>Custom Coach</span>
             <strong>Create a Convai coach locally</strong>
           </button>
+          {onDataset && (
+            <button className="mode-tile" onClick={onDataset}>
+              <span>Dialogue Dataset</span>
+              <strong>View logged dialogue cases & AI speaking behaviors</strong>
+            </button>
+          )}
         </div>
 
         <section className="setup-panel">

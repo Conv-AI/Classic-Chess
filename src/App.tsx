@@ -10,6 +10,7 @@ import { debugLog } from './debugLog';
 import CoachCard from './DanielleCoach';
 import LoadingScreen from './LoadingScreen';
 import MenuScreen from './MenuScreen';
+import DatasetScreen from './DatasetScreen';
 import { PUZZLES, puzzleScore, type Puzzle } from './puzzles';
 import { stockfishEngine } from './stockfishEngine';
 import { createSessionId, deleteSession, loadPuzzleProgress, loadSessions, markPuzzleCompleted, resetPuzzleProgress, saveSession, type AnalysisSummary, type MoveSnapshot, type StoredGameSession } from './storage';
@@ -31,7 +32,9 @@ const PIECES: Record<string, string> = {
   bk: '\u265a',
 };
 
-type Screen = 'menu' | 'loading' | 'game' | 'puzzles' | 'games' | 'creator';
+const DATASET_TOOLS_ENABLED = __DATASET_TOOLS_ENABLED__;
+
+type Screen = 'menu' | 'loading' | 'game' | 'puzzles' | 'games' | 'creator' | 'dataset';
 
 function squareAt(fileIndex: number, rankIndex: number): Square {
   return `${FILES[fileIndex]}${8 - rankIndex}` as Square;
@@ -159,6 +162,7 @@ function App() {
     );
   }
   if (screen === 'creator') return <CustomCoachCreator onBack={() => setScreen('menu')} />;
+  if (screen === 'dataset' && DATASET_TOOLS_ENABLED) return <DatasetScreen onBack={() => setScreen('menu')} />;
 
   return (
     <MenuScreen
@@ -174,6 +178,7 @@ function App() {
         setScreen('games');
       }}
       onCreator={() => setScreen('creator')}
+      onDataset={DATASET_TOOLS_ENABLED ? () => setScreen('dataset') : undefined}
     />
   );
 }
@@ -206,6 +211,54 @@ function ChessGame({
   const sessionIdRef = useRef(createSessionId());
   const analysisStartedRef = useRef(false);
   const moveListRef = useRef<HTMLOListElement | null>(null);
+
+  const [lastExchange, setLastExchange] = useState<any>(null);
+  const [toastMessage, setToastMessage] = useState('');
+  const [showSaveModal, setShowSaveModal] = useState(false);
+  const [selectedExpected, setSelectedExpected] = useState<'silent' | 'talk'>('silent');
+
+  function showToast(msg: string) {
+    setToastMessage(msg);
+    setTimeout(() => {
+      setToastMessage((c) => (c === msg ? '' : c));
+    }, 3000);
+  }
+
+  function openSaveModal() {
+    if (!lastExchange) {
+      showToast('No recent dialogue exchange to save.');
+      return;
+    }
+    setSelectedExpected(lastExchange.wasSilent ? 'silent' : 'talk');
+    setShowSaveModal(true);
+  }
+
+  async function handleAddToDataset(expectedResponse: 'silent' | 'talk') {
+    if (!lastExchange) {
+      showToast('No recent dialogue exchange to save.');
+      return;
+    }
+    const payload = {
+      ...lastExchange,
+      sessionId: sessionIdRef.current,
+      expectedResponse,
+    };
+    try {
+      const res = await fetch('/api/dataset', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      if (res.ok) {
+        const result = await res.json();
+        showToast(`Saved to dataset! Total entries: ${result.count}`);
+      } else {
+        showToast('Failed to save dialogue.');
+      }
+    } catch {
+      showToast('Error connecting to dataset API.');
+    }
+  }
 
   const legalMoves = useMemo(() => {
     if (!selected) return [];
@@ -310,23 +363,33 @@ function ChessGame({
     const next = new Chess(fen);
     const planned = await stockfishEngine.bestMove(next.fen(), difficulty.moveTimeMs, difficulty.stockfishSkill);
     const dynamicInfo = buildDynamicCoachInfo(next, planned, playerMove, coach, difficulty, moveHistory);
-    const speech = analyzeCoachMoveContext(next, planned, playerMove, difficulty, moveHistory);
-    debugLog('makeCoachMove', `planned="${planned?.san ?? 'none'}" lastMove="${playerMove?.san ?? 'none'}" speech=${speech.shouldSpeak ? 'yes' : 'no'} reason=${speech.reason} phase=${speech.phase} moveNo=${Number(next.fen().split(' ')[5])} fen="${next.fen()}"`);
-    if (speech.shouldSpeak) {
-      const prompt = [
-        'Please coach the current chess position if there is a meaningful teaching point.',
-        'Do not say "Human:", "System:", "User:", or quote any instructions.',
-        'Do not describe the move that was just made or announce my reply unless that reply is the lesson.',
-        'If there is no useful teaching point, stay silent.',
-      ].join(' ');
-      const spoken = await chessConvai.speakCoachMessage(
-        coach,
-        prompt,
-        `${buildCoachInstruction(coach, difficulty, 'move')} ${dynamicInfo}`,
-      );
-      if (spoken) setCoachLine(spoken);
+    const dynamicContext = `${buildCoachInstruction(coach, difficulty, 'move')} ${dynamicInfo}`;
+    
+    debugLog('makeCoachMove', `Dynamic context auto-LLM turn: moveNo=${Number(next.fen().split(' ')[5])} fen="${next.fen()}"`);
+    
+    const spoken = await chessConvai.speakCoachMessage(
+      coach,
+      '',
+      dynamicContext
+    );
+
+    const exchange = {
+      timestamp: new Date().toISOString(),
+      coachId: coach.id,
+      coachName: coach.name,
+      difficultyId: difficulty.id,
+      fen: next.fen(),
+      dynamicInfo: dynamicContext,
+      prompt: '',
+      coachResponse: spoken || '',
+      wasSilent: !spoken,
+    };
+    setLastExchange(exchange);
+
+    if (spoken) {
+      setCoachLine(spoken);
     } else {
-      await chessConvai.updateCoachContext(coach, `${buildCoachInstruction(coach, difficulty, 'move')} ${dynamicInfo}`);
+      setCoachLine('');
     }
 
     if (planned) {
@@ -380,6 +443,19 @@ function ChessGame({
       'Use 1-2 useful teaching sentences and avoid raw square notation aloud.',
     ].join(' ');
     const spoken = await chessConvai.speakCoachMessage(coach, prompt, dynamicInfo);
+
+    setLastExchange({
+      timestamp: new Date().toISOString(),
+      coachId: coach.id,
+      coachName: coach.name,
+      difficultyId: difficulty.id,
+      fen: game.fen(),
+      dynamicInfo,
+      prompt,
+      coachResponse: spoken || '',
+      wasSilent: !spoken,
+    });
+
     if (spoken) setCoachLine(spoken);
   }
 
@@ -387,12 +463,26 @@ function ChessGame({
     const text = chatInput.trim();
     if (!text) return;
     setChatInput('');
+    const dynamicInfo = buildDynamicCoachInfo(game, null, lastMove ? moveRecordToMoveLike(lastMove) : null, coach, difficulty);
     const spoken = await chessConvai.sendUserChat(
       coach,
       difficulty,
       text,
-      buildDynamicCoachInfo(game, null, lastMove ? moveRecordToMoveLike(lastMove) : null, coach, difficulty),
+      dynamicInfo,
     );
+
+    setLastExchange({
+      timestamp: new Date().toISOString(),
+      coachId: coach.id,
+      coachName: coach.name,
+      difficultyId: difficulty.id,
+      fen: game.fen(),
+      dynamicInfo: `${buildCoachInstruction(coach, difficulty, 'chat')} ${dynamicInfo}`,
+      prompt: `Student question: "${text}". Please answer as the chess coach using the current board context.`,
+      coachResponse: spoken || '',
+      wasSilent: !spoken,
+    });
+
     if (spoken) setCoachLine(spoken);
   }
 
@@ -409,7 +499,12 @@ function ChessGame({
       </header>
 
       <div className="app-shell">
-        <CoachCard coach={coach} status={status} lastLine={coachLine || hintText} />
+        <CoachCard
+          coach={coach}
+          status={status}
+          lastLine={coachLine || hintText}
+          onAddToDataset={DATASET_TOOLS_ENABLED ? openSaveModal : undefined}
+        />
 
         <section className="game-stage" aria-label="Chess board">
           <ChessBoard
@@ -472,11 +567,42 @@ function ChessGame({
           <button className="primary-action" onClick={() => void sendChat()}>Send</button>
         </section>
       )}
+      {toastMessage && (
+        <div className="toast-notification">
+          <span>{toastMessage}</span>
+        </div>
+      )}
+      {DATASET_TOOLS_ENABLED && showSaveModal && (
+        <div className="modal-backdrop" style={{ position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <div className="save-modal" style={{ background: 'var(--bg)', padding: '1.5rem', borderRadius: '12px', minWidth: '280px' }}>
+            <h2 style={{ marginTop: 0, marginBottom: '0.75rem' }}>Add Dialogue to Dataset</h2>
+            <label style={{ display: 'block', marginBottom: '0.5rem' }}>
+              Expected response:
+              <select
+                value={selectedExpected}
+                onChange={(e) => setSelectedExpected(e.target.value as 'silent' | 'talk')}
+                style={{ marginLeft: '0.5rem' }}
+              >
+                <option value="silent">Silent</option>
+                <option value="talk">Talk</option>
+              </select>
+            </label>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.5rem', marginTop: '1rem' }}>
+              <button className="ghost-action" onClick={() => setShowSaveModal(false)}>
+                Cancel
+              </button>
+              <button className="primary-action" onClick={() => { handleAddToDataset(selectedExpected); setShowSaveModal(false); }}>
+                Save
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </main>
   );
 }
 
-function ChessBoard({
+export function ChessBoard({
   game,
   selected,
   legalMoves,

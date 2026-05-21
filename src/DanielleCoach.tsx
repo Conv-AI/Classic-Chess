@@ -25,9 +25,10 @@ type Props = {
   status: string;
   lastLine?: string;
   onReady?: () => void;
+  onAddToDataset?: () => void;
 };
 
-export default function CoachCard({ coach, status, lastLine, onReady }: Props) {
+export default function CoachCard({ coach, status, lastLine, onReady, onAddToDataset }: Props) {
   const modelUrl = assetUrl(coach.modelFile);
   const idleUrl = assetUrl(coach.idleFile);
   const framing = FRAMING_BY_ASSET[coach.assetName] ?? FRAMING_BY_ASSET.Danielle;
@@ -85,8 +86,20 @@ export default function CoachCard({ coach, status, lastLine, onReady }: Props) {
         </Canvas>
       </div>
       <div className="character-caption">
-        <strong>{coach.name}</strong>
-        <span>{status}</span>
+        <div className="caption-info">
+          <strong>{coach.name}</strong>
+          <span>{status}</span>
+        </div>
+        {onAddToDataset && (
+          <button
+            className="add-dataset-btn"
+            onClick={onAddToDataset}
+            title="Log this dialogue exchange to dataset"
+            aria-label="Add to dataset"
+          >
+            ➕
+          </button>
+        )}
       </div>
       {lastLine && (
         <div ref={wrapRef} className="coach-line-wrap">
