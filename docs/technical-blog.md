@@ -90,7 +90,82 @@ There are two useful patterns:
 - Convai-driven action: Convai receives the game state and chooses a structured action, such as `call` or `raise_big`.
 - Local-engine action: The local poker AI, chess engine, or Stockfish chooses the legal move, then the move is sent to Convai through dynamic info so the character can speak naturally around it.
 
-Both are valid. Convai-driven actions are great when you want the character's personality and reasoning to directly influence gameplay. Local-engine actions are useful when legality, strength, or deterministic behavior matters most. In our current chess flow, Stockfish chooses Danielle's move and Convai performs the coaching explanation. In poker, the code includes Convai action support, while the game can also use local AI and share the planned move as private context.
+Both are valid. Convai-driven actions are great when you want the character's personality and reasoning to directly influence gameplay. Local-engine actions are useful when legality, strength, or deterministic behavior matters most. In our current chess flow, Stockfish always chooses the coach's move so that the game stays winnable. What changes between the two modes — and what the player can flip with a single toggle on the menu — is **who decides when the coach speaks**.
+
+## Letting the Player Choose Who Decides
+
+A pure "Convai also picks the actions" experiment lives in the `feature/convai-controlled` branch of the chess repo, while master has the original "game decides when to talk" flow. Instead of forcing one of those onto everyone, the menu now exposes a small "Coaching Control" segmented toggle (Game vs Coach) with an info tooltip:
+
+- **Game**: the local `analyzeCoachMoveContext()` heuristic inspects every move (captures, hanging pieces, weakened king shield, repeated moves, opening-principle violations, etc.), and only sends a scripted prompt to Convai when there is a real teaching point. Routine moves silently refresh dynamic info so the coach stays grounded without speaking.
+- **Coach**: the game pushes the full board context every turn and asks Convai's LLM to decide whether to chime in. The character can stay silent for ten routine moves in a row and then comment on the eleventh because *it* spotted a tactic.
+
+The choice is persisted to `localStorage` so each user keeps their preferred experience between sessions. Puzzles always use explicit scripted prompts and are intentionally unaffected — the toggle is a Quick Play decision.
+
+This pattern matters beyond chess. It separates the question "who controls game state" (always the engine, for safety) from "who controls character timing" (a stylistic choice). A poker prototype could expose the same toggle: "Should the table chatter follow the betting math, or should each opponent decide for itself when to needle the player?"
+
+## Convai-Driven Coach Decisions With `updateContext`
+
+The Coach-decides path leans on the newer `client.updateContext()` API in `@convai/web-sdk@1.3.0`. Unlike `updateDynamicInfo()`, `updateContext()` accepts a `run_llm` field with three values:
+
+| `run_llm` | Effect |
+| --- | --- |
+| `"true"` | Treat the update as itself an event and respond immediately. |
+| `"false"` | Replace the context silently; do not run the LLM. |
+| `"auto"` | Replace the context and let the LLM decide whether a response is needed. |
+
+The Coach-decides flow calls:
+
+```ts
+client.blendshapeQueue?.startConversation?.();
+client.updateContext({
+  text: dynamicInfo, // FEN + recent moves + neutral position facts + engine plan
+  mode: 'replace',
+  run_llm: 'auto',
+});
+```
+
+The character then either streams a `bot-llm-text` response (which we render with lipsync just like a scripted turn), or fires the `llmNoResponse` event (which the manager treats as an immediate clean abort and moves on without making the chess board feel frozen).
+
+### Bailing out of phantom "thinking"
+
+In practice, `run_llm: 'auto'` is not perfectly clean. Sometimes Convai accepts the context, briefly flips `isSpeaking` while it deliberates, and then silently decides not to respond without ever emitting `llmNoResponse`. Without intervention, a naive `waitForResponseCompletion` blocks for the full speaking timeout (~20 s) waiting for TTS that never arrives. The board would freeze between every player move.
+
+The fix is a single `isAutoContextTurn` flag passed through the wait helper. When it is on:
+
+- The initial probe is shorter (~2.5 s).
+- If there is no text and no audio after the probe, return immediately — Convai is silently abstaining.
+- Inside the speaking-detection loop, if `isSpeaking` flickers off and there is still no text after ~500 ms, exit fast.
+- The speaking-detection max wait drops from 20 s to 8 s as a safety net.
+
+The result is that the worst-case latency for an unspoken Coach-decides turn drops from ~20 s to ~4 s, and explicit `llmNoResponse` turns are still even faster. When the LLM does choose to speak, the full TTS plays without truncation because the bail logic only fires when no text and no audio ever showed up.
+
+The wider lesson: when you let an LLM decide whether to respond, treat both "yes" and "no" as latency-sensitive paths. Listening for an "I am done thinking and have nothing to say" signal is just as important as listening for "here is my reply."
+
+## Logging Dialogue for Iteration: The Dialogue Dataset
+
+Picking the right balance of dynamic-info content, suppression rules, and "should I speak?" heuristics is an iterative process. The chess prototype ships with a small, fully gated dataset tool to make those decisions evidence-based instead of vibes-based:
+
+```bash
+npm run dev:dataset
+```
+
+This is `vite --mode dataset`, which:
+
+- Flips a compile-time `__DATASET_TOOLS_ENABLED__` flag via Vite's `define`.
+- Registers a `/api/dataset` HTTP endpoint in the dev server (`GET`/`POST`/`DELETE`) backed by a local `dataset.json`.
+- Surfaces a "Dialogue Dataset" tile on the menu and a small ➕ button on the coach card during gameplay.
+
+When the toolkit is enabled, every LLM-invoked turn (Coach-decides always, Game-decides only on `shouldSpeak` branches, plus all hints and chats) is captured in memory as a `lastExchange`. Hitting ➕ opens a small modal where you label whether the coach *should* have spoken (`silent` / `talk`) for this position. The labelled entry — coach, difficulty, FEN, the exact dynamic-info payload, the prompt, the actual response, the coaching mode, and the human label — is POSTed and persisted.
+
+The Dataset screen then lets you browse logged exchanges with a per-entry board preview, the full LLM input it received, the coach's output, and side-by-side mode/expected badges. That makes it concrete to see:
+
+- Cases where Game-decides stayed silent but the labeller thinks the coach *should* have spoken (heuristic too quiet).
+- Cases where Coach-decides spoke aggressively on routine moves (LLM too eager — usually fixable by tightening the dynamic-info wording).
+- Cases where both modes agreed on silence (good — those are routine positions and the dataset confirms it).
+
+Because the entire dataset stack is compile-time eliminated in regular `npm run dev`, end users never see any of this in the shipped build. It's a developer-only loop for tuning the most important and most subjective part of an LLM-driven character: when to keep your mouth shut.
+
+The pattern is broadly reusable. Any LLM-driven NPC has a "should I speak now?" decision somewhere. Logging that decision with full context, labelling it after the fact, and inspecting the patterns is how you move from anecdotal tuning ("Magnus felt too talkative in that game") to a measurable, regressable signal.
 
 ## Poker Example: Four Persistent Characters
 
@@ -119,7 +194,7 @@ The prompt tells the character to use its planned move as private acting directi
 
 The chess game supports multiple selectable coach personas — Magnus, Sofia, Arjun, and Leila — each backed by a separate Convai character ID. The manager keeps a pool of connections, one per coach, and routes speech to the active coach. Only one coach is active at a time, so the flow is similar to a single-character setup but the connection pool allows switching coaches without reconnecting from scratch.
 
-When the player moves, the app asks Stockfish for Danielle's reply. Then it builds dynamic coach info and sends Danielle a prompt that asks for one short, meaningful coaching sentence.
+When the player moves, the app asks Stockfish for the coach's reply. Then it builds dynamic coach info and either sends a short scripted prompt (Game-decides mode) or hands the full context to Convai with `run_llm: 'auto'` (Coach-decides mode — see the "Letting the Player Choose Who Decides" section below). Either way, the actual chess move is still chosen by Stockfish so the game stays winnable and the coach's character can't accidentally lose your game.
 
 A key detail is TTS-friendly notation. Raw chess notation like `e4`, `Nf3`, or `a-file` does not sound right when a TTS engine reads it. The letter `e` in `e4` is read as the article "uh", and `a-file` is read as "uh file" rather than "Ay file". The fix is a prompt rule that tells the LLM to always capitalize file letters and separate letters from digits with a space: `"the E file"` instead of `"e-file"`, `"E 4"` instead of `"e4"`, `"knight to F 3"` instead of `"Nf3"`. With a capital letter the TTS reads it as the letter name, not an article or stray sound.
 

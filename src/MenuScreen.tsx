@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { COACHES, DIFFICULTIES, suggestedDifficultyForCoach, type CoachId, type DifficultyId } from './coachConfig';
 import { PUZZLES } from './puzzles';
+import type { CoachingControlMode } from './storage';
 
 type Mode = 'quickplay' | 'puzzles';
 
@@ -12,28 +13,52 @@ const PUZZLE_DIFFICULTY_LABELS: Record<string, string> = {
   expert: 'Strategic & prophylaxis',
 };
 
+const COACHING_CONTROL_TOOLTIP =
+  'Choose who decides when the coach speaks during Quick Play. ' +
+  '"Game" means the game logic inspects every move and only triggers the coach when there is a teaching point. ' +
+  '"Coach" lets Convai\'s LLM see the full context every turn and decide whether to chime in on its own.';
+
+const COACHING_CONTROL_OPTIONS: Array<{ value: CoachingControlMode; label: string; description: string }> = [
+  {
+    value: 'game',
+    label: 'Game',
+    description: 'Game logic picks the teaching moments.',
+  },
+  {
+    value: 'coach',
+    label: 'Coach',
+    description: 'Convai decides when to speak.',
+  },
+];
+
 type Props = {
   coachId: CoachId;
   difficultyId: DifficultyId;
   savedGameCount: number;
+  coachingControlMode: CoachingControlMode;
   onCoachChange: (coachId: CoachId) => void;
   onDifficultyChange: (difficultyId: DifficultyId) => void;
+  onCoachingControlModeChange: (mode: CoachingControlMode) => void;
   onQuickPlay: () => void;
   onPuzzles: () => void;
   onGames: () => void;
   onCreator: () => void;
+  onDataset?: () => void;
 };
 
 export default function MenuScreen({
   coachId,
   difficultyId,
   savedGameCount,
+  coachingControlMode,
   onCoachChange,
   onDifficultyChange,
+  onCoachingControlModeChange,
   onQuickPlay,
   onPuzzles,
   onGames,
   onCreator,
+  onDataset,
 }: Props) {
   const [selectedMode, setSelectedMode] = useState<Mode>('quickplay');
   const selectedCoach = COACHES.find((coach) => coach.id === coachId) ?? COACHES[0];
@@ -80,6 +105,12 @@ export default function MenuScreen({
             <span>Custom Coach</span>
             <strong>Create a Convai coach locally</strong>
           </button>
+          {onDataset && (
+            <button className="mode-tile" onClick={onDataset}>
+              <span>Dialogue Dataset</span>
+              <strong>View logged dialogue cases &amp; AI speaking behaviors</strong>
+            </button>
+          )}
         </div>
 
         <section className="setup-panel">
@@ -127,11 +158,62 @@ export default function MenuScreen({
             </div>
           </div>
 
-          <div className="coach-summary">
-            <p className="eyebrow">{selectedCoach.name}</p>
-            <h2>{selectedCoach.title}</h2>
-            <p>{selectedCoach.chessFocus}</p>
-            <small>{selectedCoach.voiceStyle}</small>
+          <div className="coach-summary-stack">
+            <div className="coach-summary">
+              <p className="eyebrow">{selectedCoach.name}</p>
+              <h2>{selectedCoach.title}</h2>
+              <p>{selectedCoach.chessFocus}</p>
+              <small>{selectedCoach.voiceStyle}</small>
+            </div>
+
+            <div
+              className="coaching-control-card"
+              role="group"
+              aria-labelledby="coaching-control-heading"
+            >
+              <div className="coaching-control-header">
+                <p
+                  className="eyebrow coaching-control-heading"
+                  id="coaching-control-heading"
+                >
+                  Coaching Control
+                </p>
+                <span
+                  className="coaching-control-info"
+                  role="img"
+                  aria-label="About coaching control"
+                  title={COACHING_CONTROL_TOOLTIP}
+                  tabIndex={0}
+                >
+                  ?
+                </span>
+              </div>
+              <p className="coaching-control-sub">
+                {COACHING_CONTROL_OPTIONS.find((opt) => opt.value === coachingControlMode)?.description}
+              </p>
+              <div
+                className="coaching-control-toggle"
+                role="radiogroup"
+                aria-label="Coaching control mode"
+              >
+                {COACHING_CONTROL_OPTIONS.map((option) => {
+                  const isSelected = option.value === coachingControlMode;
+                  return (
+                    <button
+                      key={option.value}
+                      type="button"
+                      role="radio"
+                      aria-checked={isSelected}
+                      className={`coaching-control-option${isSelected ? ' is-selected' : ''}`}
+                      title={option.description}
+                      onClick={() => onCoachingControlModeChange(option.value)}
+                    >
+                      {option.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
           </div>
         </section>
 

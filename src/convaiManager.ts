@@ -3,7 +3,7 @@ import { COACHES, type CoachConfig, type CoachId, type DifficultyConfig } from '
 import { debugLog } from './debugLog';
 
 const API_KEY = import.meta.env.VITE_CONVAI_API_KEY as string;
-const SUPPRESSED_RESPONSE_PATTERN = /\b(silent|human)\b/i;
+const SUPPRESSED_RESPONSE_PATTERN = /^\s*(silent|human):?\s*[.!?]*\s*$/i;
 
 export type ConvaiResponse = {
   coachId: CoachId;
@@ -28,7 +28,9 @@ type CoachConnection = {
   longestResponseText: string;
   responseSuppressed: boolean;
   responseSuppressedReason: string;
+  llmNoResponse: boolean;
   hasFlushed: boolean;
+  isThinking: boolean;
   unsubFns: Array<() => void>;
   lipsyncIndex: number;
   lipsyncLastTime: number;
@@ -54,7 +56,9 @@ function createConnection(coach: CoachConfig): CoachConnection {
     longestResponseText: '',
     responseSuppressed: false,
     responseSuppressedReason: '',
+    llmNoResponse: false,
     hasFlushed: false,
+    isThinking: false,
     unsubFns: [],
     lipsyncIndex: 0,
     lipsyncLastTime: 0,
@@ -137,6 +141,10 @@ class ChessConvaiManager {
           if (type !== 'bot-llm-text') {
             debugLog('Convai', `[${coach.name}] MSG type="${type}" content="${String(content).slice(0, 80)}"`);
           }
+          if (type === 'llm-no-response') {
+            this.markLlmNoResponse(conn);
+            return;
+          }
           if (type === 'bot-llm-text' && content) {
             const suppressedWord = this.getSuppressedResponseWord(content);
             if (suppressedWord) {
@@ -159,6 +167,7 @@ class ChessConvaiManager {
         client.on('stateChange', (sdkState: any) => {
           const wasSpeaking = conn.isSpeaking;
           conn.isSpeaking = Boolean(sdkState.isSpeaking);
+          conn.isThinking = Boolean(sdkState.isThinking);
 
           if (conn.isSpeaking && !wasSpeaking) {
             conn.lipsyncActive = true;
@@ -209,6 +218,10 @@ class ChessConvaiManager {
         const sessionId = payload?.sessionId ?? client.conversationSessionId ?? 'unknown';
         debugLog('Convai', `[${coach.name}] turnEnd session=${sessionId}`);
         this.captureLatestText(conn);
+      }));
+
+      conn.unsubFns.push(client.on('llmNoResponse', () => {
+        this.markLlmNoResponse(conn);
       }));
 
       conn.unsubFns.push(client.on('blendshapes', () => {
@@ -267,16 +280,21 @@ class ChessConvaiManager {
 
   async speakCoachMessage(coach: CoachConfig, message: string, dynamicInfo: string): Promise<string> {
     return this.runExclusiveSpeech(async () => {
+      const isAutoContextTurn = !message.trim();
       this.activeCoachId = coach.id;
       await this.connectCoach(coach, { waitForBotReady: true, readyWaitMs: 3500, reconnectIfStale: true });
-      // Wait longer for any previous TTS to fully render. Sending a new user message while
-      // Convai is still streaming audio causes it to abort the prior turn mid-sentence.
-      await this.waitForGlobalSilence(`${coach.name} turn preflight`, 350, 1500);
+      // Brief preflight silence so any straggling audio finishes before sending the next turn.
+      // Kept short so coach-decides mode (which fires after every move) stays snappy.
+      await this.waitForGlobalSilence(`${coach.name} turn preflight`, 150, 800);
       let response = await this.sendAndAwaitSpeech(coach, message, dynamicInfo);
       if (!response.trim()) {
         const conn = this.pool.get(coach.id);
-        if (conn?.responseSuppressed) {
+        if (conn?.llmNoResponse) {
+          debugLog('Convai', `[${coach.name}] Auto context turn abstained; applying move without speech`);
+        } else if (conn?.responseSuppressed) {
           debugLog('Convai', `[${coach.name}] Suppressed response skipped; applying move without speech`);
+        } else if (isAutoContextTurn) {
+          debugLog('Convai', `[${coach.name}] Auto context turn produced no speech; applying move without reconnect`);
         } else if (conn) {
           debugLog('Convai', `[${coach.name}] Empty response, reconnecting once`);
           await this.disconnectOne(conn);
@@ -414,14 +432,37 @@ class ChessConvaiManager {
     if (!readyConn?.client || !readyConn.connected) return '';
     if (!readyConn.botReady) debugLog('Convai', `[${coach.name}] BOT READY still pending; sending anyway`);
 
-    readyConn.client.updateDynamicInfo(dynamicInfo);
-    this.resetResponseState(readyConn);
-    this.activeCoachId = coach.id;
-
     const sessionId = readyConn.client.conversationSessionId ?? 'unknown';
-    debugLog('Convai', `[${coach.name}] Speaking session=${sessionId}: "${message.slice(0, 100)}"`);
-    readyConn.client.sendUserTextMessage(message);
-    const response = await this.waitForResponseCompletion(readyConn);
+
+    let isAutoContextTurn = false;
+    if (!message.trim() && typeof readyConn.client.updateContext === 'function') {
+      // Coach-decides path: push fresh context and let Convai's LLM decide whether to chime in.
+      isAutoContextTurn = true;
+      debugLog('Convai', `[${coach.name}] Context update auto-LLM turn session=${sessionId}`);
+      this.resetResponseState(readyConn);
+      this.activeCoachId = coach.id;
+      try { readyConn.client.blendshapeQueue?.startConversation?.(); } catch {}
+      readyConn.client.updateContext({
+        text: dynamicInfo,
+        mode: 'replace',
+        run_llm: 'auto',
+      });
+    } else if (!message.trim()) {
+      // Older Convai runtimes without updateContext: best we can do is push context silently.
+      readyConn.client.updateDynamicInfo(dynamicInfo);
+      this.resetResponseState(readyConn);
+      this.activeCoachId = coach.id;
+      debugLog('Convai', `[${coach.name}] Context updated without auto-LLM support`);
+      return '';
+    } else {
+      readyConn.client.updateDynamicInfo(dynamicInfo);
+      this.resetResponseState(readyConn);
+      this.activeCoachId = coach.id;
+      debugLog('Convai', `[${coach.name}] Speaking session=${sessionId}: "${message.slice(0, 100)}"`);
+      readyConn.client.sendUserTextMessage(message);
+    }
+
+    const response = await this.waitForResponseCompletion(readyConn, isAutoContextTurn);
     debugLog('Convai', `[${coach.name}] Speech done. Response: "${response.slice(0, 100)}"`);
     return response;
   }
@@ -432,16 +473,19 @@ class ChessConvaiManager {
     conn.longestResponseText = '';
     conn.responseSuppressed = false;
     conn.responseSuppressedReason = '';
+    conn.llmNoResponse = false;
     conn.hasFlushed = false;
     conn.turnEnded = false;
     conn.lastTurnEndAt = 0;
     this.resetLipsyncState(conn);
   }
 
-  private async waitForResponseCompletion(conn: CoachConnection): Promise<string> {
+  private async waitForResponseCompletion(conn: CoachConnection, isAutoContextTurn = false): Promise<string> {
     let everSpoke = false;
-    for (let i = 0; i < 20; i++) {
-      await this.sleep(250);
+    const initialIters = isAutoContextTurn ? 25 : 40; // 2.5s vs 4s
+    for (let i = 0; i < initialIters; i++) {
+      await this.sleep(100);
+      if (conn.llmNoResponse) return '';
       if (conn.responseSuppressed) return '';
       if (conn.turnEnded) break;
       if (conn.isSpeaking) {
@@ -453,43 +497,81 @@ class ChessConvaiManager {
     }
 
     if (!everSpoke && !conn.lastEmittedText && !conn.turnEnded) {
-      await this.waitForTurnEndOrFirstText(conn, 2500);
+      await this.waitForTurnEndOrFirstText(conn, isAutoContextTurn ? 1500 : 2000);
+      if (conn.llmNoResponse) return '';
       if (conn.responseSuppressed) return '';
       if (conn.isSpeaking) everSpoke = true;
+    }
+
+    // Auto-context fast-exit: if no actual text was emitted AND we are not currently
+    // hearing audio, the LLM is silently abstaining without firing llm-no-response.
+    // Bail out here instead of waiting through the long speaking-detection loop for
+    // a signal that will never arrive.
+    if (
+      isAutoContextTurn &&
+      !conn.lastEmittedText &&
+      !conn.streamBuffer &&
+      !conn.longestResponseText &&
+      !conn.isSpeaking
+    ) {
+      debugLog('Convai', `[${conn.coach.name}] Auto-context turn yielded no text; treating as silent abstain`);
+      return '';
     }
 
     if (conn.isSpeaking || everSpoke) {
       let silentMs = 0;
       // Prefer Convai's turn-end signal, but keep a short silence fallback so a missing
       // turnEnd event does not make the chess move feel frozen after the coach has spoken.
-      for (let i = 0; i < 50; i++) {
-        await this.sleep(500);
+      const speakingMaxIters = isAutoContextTurn ? 80 : 200; // 8s vs 20s
+      for (let i = 0; i < speakingMaxIters; i++) {
+        await this.sleep(100);
+        if (conn.llmNoResponse) return '';
         if (conn.responseSuppressed) return '';
+
+        // Auto-context flicker bail: if isSpeaking dropped, we have been silent for a moment,
+        // and still no actual text has shown up, Convai is "thinking" without ever emitting TTS.
+        if (
+          isAutoContextTurn &&
+          !conn.isSpeaking &&
+          !conn.lastEmittedText &&
+          !conn.streamBuffer &&
+          !conn.longestResponseText &&
+          silentMs >= 500
+        ) {
+          debugLog('Convai', `[${conn.coach.name}] Auto-context turn flickered isSpeaking without text; exiting fast`);
+          return '';
+        }
+
         if (!conn.isSpeaking) {
-          silentMs += 500;
-          if (conn.turnEnded && silentMs >= 800) break;
-          if (silentMs >= 2500) break;
+          silentMs += 100;
+          if (conn.turnEnded && silentMs >= 300) break;
+          if (silentMs >= 1500) break;
         } else {
           silentMs = 0;
         }
       }
-      await this.waitForTurnEndOrStableText(conn, 2500, 700);
+      await this.waitForTurnEndOrStableText(conn, isAutoContextTurn ? 1000 : 2000, isAutoContextTurn ? 300 : 500);
     } else if (conn.lastEmittedText) {
-      await this.waitForTurnEndOrStableText(conn, 2500, 700);
+      await this.waitForTurnEndOrStableText(conn, isAutoContextTurn ? 1000 : 2000, isAutoContextTurn ? 300 : 500);
     }
 
-    this.lastSpeechEndedAt = Date.now();
-    this.captureLatestText(conn);
-    // Slightly larger post-speech silence window so any straggling audio finishes before
-    // the speech queue releases the next entry.
-    await this.waitForGlobalSilence(`${conn.coach.name} post-speech`, 300, 1200);
+    if (everSpoke || conn.lastEmittedText) {
+      this.lastSpeechEndedAt = Date.now();
+      this.captureLatestText(conn);
+      // Modest post-speech silence window so any straggling audio finishes before
+      // the speech queue releases the next entry.
+      await this.waitForGlobalSilence(`${conn.coach.name} post-speech`, 150, isAutoContextTurn ? 400 : 800);
+    } else {
+      this.captureLatestText(conn);
+    }
     return this.getBestResponseText(conn);
   }
 
   private async waitForTurnEndOrFirstText(conn: CoachConnection, maxWaitMs: number): Promise<void> {
     const start = Date.now();
     while (Date.now() - start < maxWaitMs) {
-      await this.sleep(200);
+      await this.sleep(100);
+      if (conn.llmNoResponse) return;
       if (conn.responseSuppressed) return;
       this.captureLatestText(conn);
       if (conn.turnEnded || conn.isSpeaking || conn.lastEmittedText || conn.longestResponseText || conn.streamBuffer) return;
@@ -501,16 +583,17 @@ class ChessConvaiManager {
     let stableFor = 0;
     let lastText = conn.longestResponseText || conn.lastEmittedText || conn.streamBuffer;
     while (Date.now() - start < maxWaitMs) {
-      await this.sleep(200);
+      await this.sleep(100);
+      if (conn.llmNoResponse) return;
       if (conn.responseSuppressed) return;
       const current = conn.longestResponseText || conn.lastEmittedText || conn.streamBuffer;
       if (current === lastText) {
-        stableFor += 200;
+        stableFor += 100;
       } else {
         stableFor = 0;
         lastText = current;
       }
-      if (conn.turnEnded && stableFor >= 400) return;
+      if (conn.turnEnded && stableFor >= 200) return;
       if (stableFor >= stableMs) return;
     }
   }
@@ -618,6 +701,25 @@ class ChessConvaiManager {
     debugLog('Convai', `[${conn.coach.name}] Suppressed bot response containing "${word}"; interrupted audio`);
   }
 
+  private markLlmNoResponse(conn: CoachConnection): void {
+    if (conn.llmNoResponse) return;
+    conn.llmNoResponse = true;
+    conn.streamBuffer = '';
+    conn.lastEmittedText = '';
+    conn.longestResponseText = '';
+    conn.turnEnded = true;
+    conn.lastTurnEndAt = Date.now();
+    conn.isThinking = false;
+    if (this.streamDebounce) {
+      clearTimeout(this.streamDebounce);
+      this.streamDebounce = null;
+    }
+    this.resetLipsyncState(conn);
+    this.lastSpeechEndedAt = Date.now();
+    this.emitStatus();
+    debugLog('Convai', `[${conn.coach.name}] LLM chose no response`);
+  }
+
   private resetLipsyncState(conn: CoachConnection): void {
     conn.lipsyncIndex = 0;
     conn.lipsyncLastTime = 0;
@@ -663,8 +765,10 @@ class ChessConvaiManager {
     conn.longestResponseText = '';
     conn.responseSuppressed = false;
     conn.responseSuppressedReason = '';
+    conn.llmNoResponse = false;
     conn.turnEnded = false;
     conn.lastTurnEndAt = 0;
+    conn.isThinking = false;
     this.emitStatus();
   }
 

@@ -100,3 +100,26 @@ export function resetPuzzleProgress(difficulty: DifficultyId): void {
   delete progress[difficulty];
   window.localStorage.setItem(PUZZLE_PROGRESS_KEY, JSON.stringify(progress));
 }
+
+export type CoachingControlMode = 'game' | 'coach';
+
+const COACHING_CONTROL_KEY = 'classic-chess.coachingControlMode.v1';
+const DEFAULT_COACHING_CONTROL_MODE: CoachingControlMode = 'game';
+
+export function loadCoachingControlMode(): CoachingControlMode {
+  try {
+    const raw = window.localStorage.getItem(COACHING_CONTROL_KEY);
+    if (raw === 'game' || raw === 'coach') return raw;
+    return DEFAULT_COACHING_CONTROL_MODE;
+  } catch {
+    return DEFAULT_COACHING_CONTROL_MODE;
+  }
+}
+
+export function saveCoachingControlMode(mode: CoachingControlMode): void {
+  try {
+    window.localStorage.setItem(COACHING_CONTROL_KEY, mode);
+  } catch {
+    // localStorage may be unavailable (private mode, quota); ignore so the toggle still works in-session.
+  }
+}

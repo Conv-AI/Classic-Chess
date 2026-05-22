@@ -8,12 +8,29 @@ import { analyzeCoachMoveContext, buildCoachInstruction, buildDynamicCoachInfo, 
 import { chessConvai } from './convaiManager';
 import { debugLog } from './debugLog';
 import CoachCard from './DanielleCoach';
+import DatasetScreen from './DatasetScreen';
 import LoadingScreen from './LoadingScreen';
 import MenuScreen from './MenuScreen';
 import { PUZZLES, puzzleScore, type Puzzle } from './puzzles';
 import { stockfishEngine } from './stockfishEngine';
-import { createSessionId, deleteSession, loadPuzzleProgress, loadSessions, markPuzzleCompleted, resetPuzzleProgress, saveSession, type AnalysisSummary, type MoveSnapshot, type StoredGameSession } from './storage';
+import {
+  createSessionId,
+  deleteSession,
+  loadCoachingControlMode,
+  loadPuzzleProgress,
+  loadSessions,
+  markPuzzleCompleted,
+  resetPuzzleProgress,
+  saveCoachingControlMode,
+  saveSession,
+  type AnalysisSummary,
+  type CoachingControlMode,
+  type MoveSnapshot,
+  type StoredGameSession,
+} from './storage';
 import type { MoveRecord } from './types';
+
+const DATASET_TOOLS_ENABLED = __DATASET_TOOLS_ENABLED__;
 
 const FILES = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'];
 const PIECES: Record<string, string> = {
@@ -31,7 +48,19 @@ const PIECES: Record<string, string> = {
   bk: '\u265a',
 };
 
-type Screen = 'menu' | 'loading' | 'game' | 'puzzles' | 'games' | 'creator';
+type Screen = 'menu' | 'loading' | 'game' | 'puzzles' | 'games' | 'creator' | 'dataset';
+
+type DialogueExchange = {
+  timestamp: string;
+  coachId: CoachId;
+  coachName: string;
+  difficultyId: DifficultyId;
+  fen: string;
+  dynamicInfo: string;
+  prompt: string;
+  coachResponse: string;
+  wasSilent: boolean;
+};
 
 function squareAt(fileIndex: number, rankIndex: number): Square {
   return `${FILES[fileIndex]}${8 - rankIndex}` as Square;
@@ -64,12 +93,19 @@ function App() {
   const [screen, setScreen] = useState<Screen>('menu');
   const [coachId, setCoachId] = useState<CoachId>('leila');
   const [difficultyId, setDifficultyId] = useState<DifficultyId>('intermediate');
+  const [coachingControlMode, setCoachingControlModeState] = useState<CoachingControlMode>(() => loadCoachingControlMode());
   const [loadingProgress, setLoadingProgress] = useState(0);
   const [loadingStep, setLoadingStep] = useState('Setting up the board...');
   const [prewarmCoachId, setPrewarmCoachId] = useState<CoachId | null>(null);
   const avatarReadyResolverRef = useRef<(() => void) | null>(null);
   const [sessions, setSessions] = useState<StoredGameSession[]>(() => loadSessions());
   const coach = getCoach(coachId);
+
+  const handleCoachingControlModeChange = useCallback((mode: CoachingControlMode) => {
+    setCoachingControlModeState(mode);
+    saveCoachingControlMode(mode);
+    debugLog('App', `coachingControlMode -> ${mode}`);
+  }, []);
 
   useEffect(() => {
     return chessConvai.onStatus((status) => {
@@ -131,12 +167,13 @@ function App() {
       <ChessGame
         coachId={coachId}
         difficultyId={difficultyId}
+        coachingControlMode={coachingControlMode}
         onBackToMenu={() => {
           refreshSessions();
           setScreen('menu');
         }}
         onSessionsChanged={refreshSessions}
-        key={`game-${coachId}`}
+        key={`game-${coachId}-${coachingControlMode}`}
       />
     );
   }
@@ -159,14 +196,17 @@ function App() {
     );
   }
   if (screen === 'creator') return <CustomCoachCreator onBack={() => setScreen('menu')} />;
+  if (screen === 'dataset' && DATASET_TOOLS_ENABLED) return <DatasetScreen onBack={() => setScreen('menu')} />;
 
   return (
     <MenuScreen
       coachId={coachId}
       difficultyId={difficultyId}
       savedGameCount={sessions.length}
+      coachingControlMode={coachingControlMode}
       onCoachChange={setCoachId}
       onDifficultyChange={setDifficultyId}
+      onCoachingControlModeChange={handleCoachingControlModeChange}
       onQuickPlay={() => void startQuickPlay()}
       onPuzzles={() => setScreen('puzzles')}
       onGames={() => {
@@ -174,6 +214,7 @@ function App() {
         setScreen('games');
       }}
       onCreator={() => setScreen('creator')}
+      onDataset={DATASET_TOOLS_ENABLED ? () => setScreen('dataset') : undefined}
     />
   );
 }
@@ -181,11 +222,13 @@ function App() {
 function ChessGame({
   coachId,
   difficultyId,
+  coachingControlMode,
   onBackToMenu,
   onSessionsChanged,
 }: {
   coachId: CoachId;
   difficultyId: DifficultyId;
+  coachingControlMode: CoachingControlMode;
   onBackToMenu: () => void;
   onSessionsChanged: () => void;
 }) {
@@ -206,6 +249,55 @@ function ChessGame({
   const sessionIdRef = useRef(createSessionId());
   const analysisStartedRef = useRef(false);
   const moveListRef = useRef<HTMLOListElement | null>(null);
+
+  const [lastExchange, setLastExchange] = useState<DialogueExchange | null>(null);
+  const [toastMessage, setToastMessage] = useState('');
+  const [showSaveModal, setShowSaveModal] = useState(false);
+  const [selectedExpected, setSelectedExpected] = useState<'silent' | 'talk'>('silent');
+
+  function showToast(msg: string) {
+    setToastMessage(msg);
+    setTimeout(() => {
+      setToastMessage((current) => (current === msg ? '' : current));
+    }, 3000);
+  }
+
+  function openSaveModal() {
+    if (!lastExchange) {
+      showToast('No recent dialogue exchange to save.');
+      return;
+    }
+    setSelectedExpected(lastExchange.wasSilent ? 'silent' : 'talk');
+    setShowSaveModal(true);
+  }
+
+  async function handleAddToDataset(expectedResponse: 'silent' | 'talk') {
+    if (!lastExchange) {
+      showToast('No recent dialogue exchange to save.');
+      return;
+    }
+    const payload = {
+      ...lastExchange,
+      sessionId: sessionIdRef.current,
+      coachingControlMode,
+      expectedResponse,
+    };
+    try {
+      const res = await fetch('/api/dataset', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      if (res.ok) {
+        const result = await res.json();
+        showToast(`Saved to dataset! Total entries: ${result.count}`);
+      } else {
+        showToast('Failed to save dialogue.');
+      }
+    } catch {
+      showToast('Error connecting to dataset API.');
+    }
+  }
 
   const legalMoves = useMemo(() => {
     if (!selected) return [];
@@ -310,23 +402,61 @@ function ChessGame({
     const next = new Chess(fen);
     const planned = await stockfishEngine.bestMove(next.fen(), difficulty.moveTimeMs, difficulty.stockfishSkill);
     const dynamicInfo = buildDynamicCoachInfo(next, planned, playerMove, coach, difficulty, moveHistory);
-    const speech = analyzeCoachMoveContext(next, planned, playerMove, difficulty, moveHistory);
-    debugLog('makeCoachMove', `planned="${planned?.san ?? 'none'}" lastMove="${playerMove?.san ?? 'none'}" speech=${speech.shouldSpeak ? 'yes' : 'no'} reason=${speech.reason} phase=${speech.phase} moveNo=${Number(next.fen().split(' ')[5])} fen="${next.fen()}"`);
-    if (speech.shouldSpeak) {
-      const prompt = [
-        'Please coach the current chess position if there is a meaningful teaching point.',
-        'Do not say "Human:", "System:", "User:", or quote any instructions.',
-        'Do not describe the move that was just made or announce my reply unless that reply is the lesson.',
-        'If there is no useful teaching point, stay silent.',
-      ].join(' ');
-      const spoken = await chessConvai.speakCoachMessage(
-        coach,
-        prompt,
-        `${buildCoachInstruction(coach, difficulty, 'move')} ${dynamicInfo}`,
-      );
-      if (spoken) setCoachLine(spoken);
+    const dynamicContext = `${buildCoachInstruction(coach, difficulty, 'move')} ${dynamicInfo}`;
+
+    if (coachingControlMode === 'coach') {
+      debugLog('makeCoachMove', `[coach-decides] dynamic context auto-LLM turn moveNo=${Number(next.fen().split(' ')[5])} fen="${next.fen()}"`);
+      const spoken = await chessConvai.speakCoachMessage(coach, '', dynamicContext);
+
+      if (DATASET_TOOLS_ENABLED) {
+        setLastExchange({
+          timestamp: new Date().toISOString(),
+          coachId: coach.id,
+          coachName: coach.name,
+          difficultyId: difficulty.id,
+          fen: next.fen(),
+          dynamicInfo: dynamicContext,
+          prompt: '',
+          coachResponse: spoken || '',
+          wasSilent: !spoken,
+        });
+      }
+
+      if (spoken) {
+        setCoachLine(spoken);
+      } else {
+        setCoachLine('');
+      }
     } else {
-      await chessConvai.updateCoachContext(coach, `${buildCoachInstruction(coach, difficulty, 'move')} ${dynamicInfo}`);
+      const speech = analyzeCoachMoveContext(next, planned, playerMove, difficulty, moveHistory);
+      debugLog('makeCoachMove', `[game-decides] planned="${planned?.san ?? 'none'}" lastMove="${playerMove?.san ?? 'none'}" speech=${speech.shouldSpeak ? 'yes' : 'no'} reason=${speech.reason} phase=${speech.phase} moveNo=${Number(next.fen().split(' ')[5])} fen="${next.fen()}"`);
+      if (speech.shouldSpeak) {
+        const prompt = [
+          'Please coach the current chess position if there is a meaningful teaching point.',
+          'Do not say "Human:", "System:", "User:", or quote any instructions.',
+          'Do not describe the move that was just made or announce my reply unless that reply is the lesson.',
+          'If there is no useful teaching point, stay silent.',
+        ].join(' ');
+        const spoken = await chessConvai.speakCoachMessage(coach, prompt, dynamicContext);
+
+        if (DATASET_TOOLS_ENABLED) {
+          setLastExchange({
+            timestamp: new Date().toISOString(),
+            coachId: coach.id,
+            coachName: coach.name,
+            difficultyId: difficulty.id,
+            fen: next.fen(),
+            dynamicInfo: dynamicContext,
+            prompt,
+            coachResponse: spoken || '',
+            wasSilent: !spoken,
+          });
+        }
+
+        if (spoken) setCoachLine(spoken);
+      } else {
+        await chessConvai.updateCoachContext(coach, dynamicContext);
+      }
     }
 
     if (planned) {
@@ -337,8 +467,12 @@ function ChessGame({
         debugLog('App', `Coach move applied: ${applied.san} (${applied.from}→${applied.to}) moveNo=${Number(next.fen().split(' ')[5])} fen="${next.fen()}"`);
         setGame(next);
         setHistory((moves) => [...moves, coachRecord]);
-        const afterReplyInfo = buildDynamicCoachInfo(next, null, applied, coach, difficulty, [...moveHistory, coachRecord]);
-        void chessConvai.updateCoachContext(coach, `${buildCoachInstruction(coach, difficulty, 'move')} ${afterReplyInfo}`);
+        if (coachingControlMode === 'game') {
+          // Coach-decides mode already pushed the context via the empty-message updateContext call,
+          // so we only need this silent context refresh in game-decides mode.
+          const afterReplyInfo = buildDynamicCoachInfo(next, null, applied, coach, difficulty, [...moveHistory, coachRecord]);
+          void chessConvai.updateCoachContext(coach, `${buildCoachInstruction(coach, difficulty, 'move')} ${afterReplyInfo}`);
+        }
       }
     }
     setThinking(false);
@@ -380,6 +514,21 @@ function ChessGame({
       'Use 1-2 useful teaching sentences and avoid raw square notation aloud.',
     ].join(' ');
     const spoken = await chessConvai.speakCoachMessage(coach, prompt, dynamicInfo);
+
+    if (DATASET_TOOLS_ENABLED) {
+      setLastExchange({
+        timestamp: new Date().toISOString(),
+        coachId: coach.id,
+        coachName: coach.name,
+        difficultyId: difficulty.id,
+        fen: game.fen(),
+        dynamicInfo,
+        prompt,
+        coachResponse: spoken || '',
+        wasSilent: !spoken,
+      });
+    }
+
     if (spoken) setCoachLine(spoken);
   }
 
@@ -387,12 +536,28 @@ function ChessGame({
     const text = chatInput.trim();
     if (!text) return;
     setChatInput('');
+    const dynamicInfo = buildDynamicCoachInfo(game, null, lastMove ? moveRecordToMoveLike(lastMove) : null, coach, difficulty);
     const spoken = await chessConvai.sendUserChat(
       coach,
       difficulty,
       text,
-      buildDynamicCoachInfo(game, null, lastMove ? moveRecordToMoveLike(lastMove) : null, coach, difficulty),
+      dynamicInfo,
     );
+
+    if (DATASET_TOOLS_ENABLED) {
+      setLastExchange({
+        timestamp: new Date().toISOString(),
+        coachId: coach.id,
+        coachName: coach.name,
+        difficultyId: difficulty.id,
+        fen: game.fen(),
+        dynamicInfo: `${buildCoachInstruction(coach, difficulty, 'chat')} ${dynamicInfo}`,
+        prompt: `Student question: "${text}". Please answer as the chess coach using the current board context.`,
+        coachResponse: spoken || '',
+        wasSilent: !spoken,
+      });
+    }
+
     if (spoken) setCoachLine(spoken);
   }
 
@@ -409,7 +574,12 @@ function ChessGame({
       </header>
 
       <div className="app-shell">
-        <CoachCard coach={coach} status={status} lastLine={coachLine || hintText} />
+        <CoachCard
+          coach={coach}
+          status={status}
+          lastLine={coachLine || hintText}
+          onAddToDataset={DATASET_TOOLS_ENABLED ? openSaveModal : undefined}
+        />
 
         <section className="game-stage" aria-label="Chess board">
           <ChessBoard
@@ -472,34 +642,83 @@ function ChessGame({
           <button className="primary-action" onClick={() => void sendChat()}>Send</button>
         </section>
       )}
+
+      {DATASET_TOOLS_ENABLED && toastMessage && (
+        <div className="toast-notification" role="status" aria-live="polite">
+          <span>{toastMessage}</span>
+        </div>
+      )}
+
+      {DATASET_TOOLS_ENABLED && showSaveModal && (
+        <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="dataset-save-title">
+          <div className="save-modal">
+            <h2 id="dataset-save-title">Add Dialogue to Dataset</h2>
+            <p className="save-modal-sub">
+              Mark whether the coach should have spoken in this situation so the dataset reflects the ideal behaviour.
+            </p>
+            <label className="save-modal-field">
+              <span>Expected response</span>
+              <select
+                value={selectedExpected}
+                onChange={(event) => setSelectedExpected(event.target.value as 'silent' | 'talk')}
+              >
+                <option value="silent">Silent</option>
+                <option value="talk">Talk</option>
+              </select>
+            </label>
+            <div className="save-modal-actions">
+              <button className="ghost-action" onClick={() => setShowSaveModal(false)}>
+                Cancel
+              </button>
+              <button
+                className="primary-action"
+                onClick={() => {
+                  void handleAddToDataset(selectedExpected);
+                  setShowSaveModal(false);
+                }}
+              >
+                Save
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </main>
   );
 }
 
-function ChessBoard({
+export function ChessBoard({
   game,
   selected,
   legalMoves,
   lastMove,
   onSquareClick,
+  orientation = 'w',
 }: {
   game: Chess;
   selected?: Square | null;
   legalMoves?: Square[];
   lastMove?: Pick<MoveSnapshot, 'from' | 'to'> | null;
   onSquareClick?: (square: Square) => void;
+  orientation?: 'w' | 'b';
 }) {
+  const rankLabels = orientation === 'w'
+    ? [8, 7, 6, 5, 4, 3, 2, 1]
+    : [1, 2, 3, 4, 5, 6, 7, 8];
+  const fileLabels = orientation === 'w' ? FILES : [...FILES].slice().reverse();
   return (
     <div className="board-wrap">
       <div className="rank-labels">
-        {[8, 7, 6, 5, 4, 3, 2, 1].map((rank) => <span key={rank}>{rank}</span>)}
+        {rankLabels.map((rank) => <span key={rank}>{rank}</span>)}
       </div>
       <div className="chess-board">
         {Array.from({ length: 8 }).map((_, rankIndex) =>
           Array.from({ length: 8 }).map((__, fileIndex) => {
-            const square = squareAt(fileIndex, rankIndex);
+            const fileIdx = orientation === 'w' ? fileIndex : 7 - fileIndex;
+            const rankIdx = orientation === 'w' ? rankIndex : 7 - rankIndex;
+            const square = squareAt(fileIdx, rankIdx);
             const piece = game.get(square);
-            const isLight = (rankIndex + fileIndex) % 2 === 0;
+            const isLight = (rankIdx + fileIdx) % 2 === 0;
             const isSelected = selected === square;
             const isTarget = legalMoves?.includes(square);
             const isLastMove = lastMove?.from === square || lastMove?.to === square;
@@ -523,7 +742,7 @@ function ChessBoard({
         )}
       </div>
       <div className="file-labels">
-        {FILES.map((file) => <span key={file}>{file}</span>)}
+        {fileLabels.map((file) => <span key={file}>{file}</span>)}
       </div>
     </div>
   );
@@ -729,11 +948,20 @@ function PuzzleScreen({ coachId, difficultyId, onBack }: { coachId: CoachId; dif
       }
       return;
     }
+    // If the user skips without solving, count it as "not clean" so the
+    // group-complete summary is honest and the puzzle goes into the review
+    // pile alongside any wrong-answer puzzles.
+    let nextWrong = wrongInBatch;
+    if (!puzzleSolved && !wrongInBatch.includes(puzzle.id)) {
+      debugLog('PuzzleScreen', `Skipping unsolved puzzle "${puzzle.id}" — marking for review`);
+      nextWrong = [...wrongInBatch, puzzle.id];
+      setWrongInBatch(nextWrong);
+    }
     if (batchPos + 1 < batchIds.length) {
       debugLog('PuzzleScreen', `Advancing to batch position ${batchPos + 1}/${batchIds.length}`);
       setBatchPos((v) => v + 1);
     } else {
-      debugLog('PuzzleScreen', 'Batch finished — showing group-complete screen');
+      debugLog('PuzzleScreen', `Batch finished — showing group-complete screen (clean=${batchIds.length - nextWrong.length}/${batchIds.length})`);
       setGroupComplete(true);
     }
   }
@@ -903,7 +1131,13 @@ function PuzzleScreen({ coachId, difficultyId, onBack }: { coachId: CoachId; dif
           </div>
         </div>
         <section className="game-stage puzzle-board-stage">
-          <ChessBoard game={game} selected={selected} legalMoves={legalMoves} onSquareClick={(sq) => void handlePuzzleSquare(sq)} />
+          <ChessBoard
+            game={game}
+            selected={selected}
+            legalMoves={legalMoves}
+            onSquareClick={(sq) => void handlePuzzleSquare(sq)}
+            orientation={puzzle.sideToMove}
+          />
         </section>
       </div>
 

@@ -18,28 +18,33 @@ describe('puzzle bank', () => {
     }
   });
 
-  it('has three hints and a non-empty explanation per puzzle', () => {
+  it('has three hints, a position summary, and a non-empty explanation per puzzle', () => {
     for (const puzzle of PUZZLES) {
       expect(puzzle.hints.length, `puzzle ${puzzle.id} hint count`).toBe(3);
       for (const hint of puzzle.hints) {
         expect(hint.trim().length, `puzzle ${puzzle.id} hint must be non-empty`).toBeGreaterThan(0);
       }
+      expect(
+        puzzle.positionSummary.trim().length,
+        `puzzle ${puzzle.id} positionSummary must be non-empty`,
+      ).toBeGreaterThan(40);
       expect(puzzle.explanation.trim().length, `puzzle ${puzzle.id} explanation must be non-empty`).toBeGreaterThan(0);
     }
+  });
+
+  it('has exactly five puzzles per difficulty', () => {
+    const difficulties = ['new', 'beginner', 'intermediate', 'advanced', 'expert'] as const;
+    for (const difficulty of difficulties) {
+      const count = PUZZLES.filter((puzzle) => puzzle.difficultyId === difficulty).length;
+      expect(count, `${difficulty} should have 5 puzzles`).toBe(5);
+    }
+    expect(PUZZLES.length).toBe(25);
   });
 
   it('has unique puzzle ids', () => {
     const ids = PUZZLES.map((puzzle) => puzzle.id);
     const unique = new Set(ids);
     expect(unique.size, 'duplicate puzzle ids detected').toBe(ids.length);
-  });
-
-  it('has at least five puzzles per difficulty so a batch can fill', () => {
-    const difficulties = ['new', 'beginner', 'intermediate', 'advanced', 'expert'] as const;
-    for (const difficulty of difficulties) {
-      const count = PUZZLES.filter((puzzle) => puzzle.difficultyId === difficulty).length;
-      expect(count, `${difficulty} needs at least 5 puzzles`).toBeGreaterThanOrEqual(5);
-    }
   });
 
   it('scores solved puzzles by hint count', () => {

@@ -31,3 +31,6 @@ public/*.bin
 demo/
 docs/prompts.txt
 docs/AGENT_HANDOFF.md
+
+# Local dataset captured via `npm run dev:dataset`
+dataset.json
