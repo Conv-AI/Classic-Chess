@@ -24,7 +24,8 @@ describe('coach prompting helpers', () => {
     expect(instruction).toContain('I am Sofia');
     expect(instruction).toContain('Current student level: Advanced');
     expect(instruction).toContain('Reference at least one concrete chess concept');
-    expect(instruction).toContain('I must not say "the player"');
+    expect(instruction).toContain('NEVER refer to the student in third person');
+    expect(instruction).toContain('"your opponent"');
   });
 
   it('uses difficulty when deciding whether a normal opening move deserves speech', () => {
@@ -77,8 +78,11 @@ describe('coach prompting helpers', () => {
     ]);
 
     expect(context.shouldSpeak).toBe(true);
-    expect(context.reasons).toContain('king-pawn-shield');
-    expect(context.facts.join(' ')).toContain('king-side shield');
+    // f4 is a flank pawn push (kingside but not the direct g-pawn cover), so it triggers
+    // aggressive-pawn-push, not king-pawn-shield. king-pawn-shield is reserved for g2/g7.
+    expect(context.reasons).toContain('aggressive-pawn-push');
+    expect(context.reasons).not.toContain('king-pawn-shield');
+    expect(context.facts.join(' ')).toContain('flank pawn');
     expect(context.facts.join(' ')).not.toContain('teach');
   });
 

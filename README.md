@@ -63,7 +63,7 @@ Coach character IDs are configured in [src/coachConfig.ts](src/coachConfig.ts).
 - [src/puzzles.ts](src/puzzles.ts): puzzle data and scoring.
 - [src/storage.ts](src/storage.ts): localStorage helpers for saved game sessions, puzzle progress, and the persisted `coachingControlMode` setting.
 - [src/convaiCoreApi.ts](src/convaiCoreApi.ts): Convai Core API helpers used by the custom coach creator.
-- [src/DanielleCoach.tsx](src/DanielleCoach.tsx): coach card with avatar, caption, and an optional ➕ button that opens the "Add Dialogue to Dataset" modal when dataset tooling is enabled.
+- [src/CoachCard.tsx](src/CoachCard.tsx): coach card with avatar, caption, and an optional ➕ button that opens the "Add Dialogue to Dataset" modal when dataset tooling is enabled.
 
 ## Convai Integration
 
@@ -245,7 +245,7 @@ The mic button appears:
 
 ## Avatar And Lipsync
 
-Coach cards render GLB avatars through [src/DanielleCoach.tsx](src/DanielleCoach.tsx) and [src/ReallusionCharacter.tsx](src/ReallusionCharacter.tsx).
+Coach cards render GLB avatars through [src/CoachCard.tsx](src/CoachCard.tsx) and [src/ReallusionCharacter.tsx](src/ReallusionCharacter.tsx).
 
 `convaiManager.getLipsyncFrame(coachId)` reads frames from `client.blendshapeQueue` while that coach is speaking. Only the active speaking coach receives frames.
 

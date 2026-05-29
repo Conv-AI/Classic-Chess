@@ -1,17 +1,20 @@
 // Human-readable structured debug log.
 // In dev: batches entries every 200 ms and POSTs to /api/log (written to debug.log).
 // Deduplicates: identical [scope+message] within 3 s is suppressed.
+// Also keeps an in-memory ring buffer so the Copy Logs button can dump the session.
 
 const DEV = import.meta.env.DEV;
 const DEDUP_WINDOW_MS = 3000;
 const FLUSH_INTERVAL_MS = 200;
 const MAX_MESSAGE_LENGTH = 700;
+const MAX_BUFFER_ENTRIES = 2000;
 const SLOW_DEDUP_SCOPES = new Set(['CoachCard', 'ReallusionCharacter']);
 
 // key → last timestamp
 const recentKeys = new Map<string, number>();
 let batch: string[] = [];
 let flushTimer: ReturnType<typeof setTimeout> | null = null;
+const entries: string[] = [];
 
 function timestamp(): string {
   const d = new Date();
@@ -62,8 +65,32 @@ export function debugLog(scope: string, message: string, ...args: unknown[]): vo
   const line = `[${timestamp()}] [${scope}] ${full}`;
   console.info(line);
 
+  entries.push(line);
+  if (entries.length > MAX_BUFFER_ENTRIES) entries.splice(0, entries.length - MAX_BUFFER_ENTRIES);
+
   if (DEV) {
     batch.push(line);
     scheduleFlush();
   }
+}
+
+export function getLogText(): string {
+  return entries.join('\n');
+}
+
+export async function copyLogToClipboard(): Promise<void> {
+  const text = getLogText();
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+  const textarea = document.createElement('textarea');
+  textarea.value = text;
+  textarea.setAttribute('readonly', 'true');
+  textarea.style.position = 'fixed';
+  textarea.style.left = '-9999px';
+  document.body.appendChild(textarea);
+  textarea.select();
+  document.execCommand('copy');
+  document.body.removeChild(textarea);
 }

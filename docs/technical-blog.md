@@ -1,111 +1,72 @@
-# Bringing Convai Characters Into Browser Games
+# Bringing Convai Characters Into a Browser Chess Game
 
 Convai's Reallusion + Three.js workflow shows the core avatar loop: create a Reallusion character, export it for the web, render it in React/Three.js, and connect it to Convai for speech, personality, and real-time interaction.
 
 Reference: https://convai.com/blog/bring-ai-online-with-reallusion-avatars-using-threejs-react
 
-Our poker and chess prototypes build on that same idea, but put it inside playable game loops. The big picture is that the game engine owns the rules, while Convai owns the character performance. The game knows what is legal, what just happened, and what state the board or table is in. Convai turns that context into spoken, in-character behavior, streams the text response, plays generated voice, and provides lipsync data for the Reallusion avatar.
-
-One important point up front: Convai does not have to be dialogue-only. In the demos below, some moves are selected by local game logic or Stockfish and then passed to Convai as dynamic context so the character can speak naturally around the decision. But you can also make the Convai character select the move. You send the current game state to Convai, the character returns a structured Action or selected move in the response stream, and the game parses that returned action before applying it.
-
-The game should still validate the parsed action before changing state. For example, a poker character could return `call`, `fold`, or `raise_big`; a board-game character could return a selected move; and a custom game character could return any action schema you define. This lets Convai participate directly in both dialogue and decision-making.
+Our chess prototype builds on that same idea, but puts it inside a playable game loop. The big picture is that the chess engine owns the rules, while Convai owns the character performance. The game knows what is legal, what just happened, and what state the board is in. Convai turns that context into spoken, in-character behavior, streams the text response, plays generated voice, and provides lipsync data for the Reallusion avatar.
 
 ```txt
-Game engine
-  -> validate local move, or ask Convai for a structured action
+Chess engine (chess.js + Stockfish)
+  -> validate the player's move
+  -> pick the coach's reply
   -> build dynamic game context
   -> send prompt + dynamic info to Convai
-  -> receive streaming text, voice, lipsync, and optionally an action
+  -> receive streaming text, voice, and lipsync
   -> animate the Reallusion avatar
-  -> apply or display the move
+  -> apply the coach's move on the board
 ```
 
 ## The Convai Layer
 
-Both games use `@convai/web-sdk/vanilla` from the browser. A Convai client is created with a character ID, API key, TTS enabled, and ARKit-format lipsync enabled.
+The game uses `@convai/web-sdk@1.3.0` from the browser. A Convai client is created with a character ID, API key, TTS enabled, and ARKit-format lipsync enabled.
 
 ```ts
 const client = new ConvaiClient({
   apiKey: API_KEY,
-  characterId,
+  characterId: coach.characterId,
   enableLipsync: true,
   enableEmotion: true,
-  blendshapeConfig: { format: 'arkit' },
+  blendshapeConfig: { format: 'arkit', frames_buffer_duration: 0.25 },
   ttsEnabled: true,
   startWithAudioOn: false,
+  keepInContext: false,
 });
 ```
 
-The main Convai features used by the games are:
+The main Convai features used by the game are:
 
 - `sendUserTextMessage(...)` sends a turn prompt or chat message to the character.
 - `updateDynamicInfo({ text })` refreshes the character's live game context.
+- `updateContext({ text, mode, run_llm })` replaces context and optionally lets the LLM decide whether to respond.
 - `bot-llm-text` messages provide streamed response text.
 - `stateChange` tells the app when a character starts and stops speaking.
 - `blendshapeQueue` provides ARKit lipsync frames for the avatar.
 - `botReady` tells the app when the character is initialized.
 - `AudioRenderer` handles voice playback from the Convai room.
 
-This means Convai is not just a text chatbot. It is the speech layer, personality layer, conversation layer, action layer, and facial-performance data source.
+Together these make Convai the speech layer, personality layer, conversation layer, and facial-performance data source.
 
-## Dynamic Info: Keeping Characters Grounded
+## Dynamic Info: Keeping the Coach Grounded
 
-The most important integration detail is dynamic info. Before a character speaks, the game sends a compact summary of the current state.
+The most important integration detail is dynamic info. Before the coach speaks, the game sends a compact summary of the current state. This includes the coach's identity and teaching style, the student's level and curriculum, whose turn it is, whether the position is normal / check / draw / checkmate, the current FEN, the recent move history (last ten moves), the legal move count, material balance, a tactical summary, the last move played, and the coach's planned next move.
 
-For poker, this includes the hand number, betting phase, pot size, call amount, minimum raise, the character's chips, community cards, private hole cards, active players, recent table actions, recent dialogue, and the planned move.
-
-For chess, this includes whose turn it is, whether the position is normal/check/draw/checkmate, legal move count, material balance, the last move, and Danielle's planned move.
-
-This keeps Convai grounded in the actual game state. The character does not need to infer the board from scratch. The game tells Convai what matters, and Convai responds in character.
-
-## Convai Actions: Letting Characters Choose Game Moves
-
-Convai also supports structured Actions. This is important for game NPCs because the character can do more than speak: it can select an action from a list defined by the game.
-
-In the poker prototype, the Convai manager defines possible actions like:
-
-```ts
-const VALID_ACTIONS = [
-  'fold',
-  'check',
-  'call',
-  'raise_small',
-  'raise_big',
-  'all_in',
-];
-```
-
-The action config describes the characters, the poker table object, and the set of valid moves. Convai can then return an `action` message, which the game can normalize, validate, and apply.
-
-```txt
-Game sends state to Convai
-  -> Convai character reasons about the situation
-  -> Convai returns dialogue and/or a structured action
-  -> Game validates the action
-  -> Game applies the action if legal
-```
-
-There are two useful patterns:
-
-- Convai-driven action: Convai receives the game state and chooses a structured action, such as `call` or `raise_big`.
-- Local-engine action: The local poker AI, chess engine, or Stockfish chooses the legal move, then the move is sent to Convai through dynamic info so the character can speak naturally around it.
-
-Both are valid. Convai-driven actions are great when you want the character's personality and reasoning to directly influence gameplay. Local-engine actions are useful when legality, strength, or deterministic behavior matters most. In our current chess flow, Stockfish always chooses the coach's move so that the game stays winnable. What changes between the two modes — and what the player can flip with a single toggle on the menu — is **who decides when the coach speaks**.
+This keeps Convai grounded in the actual game. The character does not need to infer the board from scratch. The game tells Convai what matters, and Convai responds in character.
 
 ## Letting the Player Choose Who Decides
 
-A pure "Convai also picks the actions" experiment lives in the `feature/convai-controlled` branch of the chess repo, while master has the original "game decides when to talk" flow. Instead of forcing one of those onto everyone, the menu now exposes a small "Coaching Control" segmented toggle (Game vs Coach) with an info tooltip:
+Picking the *content* of the dynamic-info payload is only half the design. The other half is deciding **when the coach should speak at all**. The menu exposes a small "Coaching Control" segmented toggle (Game vs Coach) with an info tooltip:
 
-- **Game**: the local `analyzeCoachMoveContext()` heuristic inspects every move (captures, hanging pieces, weakened king shield, repeated moves, opening-principle violations, etc.), and only sends a scripted prompt to Convai when there is a real teaching point. Routine moves silently refresh dynamic info so the coach stays grounded without speaking.
-- **Coach**: the game pushes the full board context every turn and asks Convai's LLM to decide whether to chime in. The character can stay silent for ten routine moves in a row and then comment on the eleventh because *it* spotted a tactic.
+- **Game**: the local `analyzeCoachMoveContext()` heuristic inspects every move (captures, hanging pieces, weakened king shield, repeated moves, opening-principle violations, and so on), and only sends a scripted prompt to Convai when there is a real teaching point. Routine moves silently refresh dynamic info so the coach stays grounded without speaking.
+- **Coach**: the game pushes the full board context every turn and asks Convai's LLM to decide whether to chime in. The character can stay silent for several routine moves in a row and then comment when *it* spots something worth saying.
 
 The choice is persisted to `localStorage` so each user keeps their preferred experience between sessions. Puzzles always use explicit scripted prompts and are intentionally unaffected — the toggle is a Quick Play decision.
 
-This pattern matters beyond chess. It separates the question "who controls game state" (always the engine, for safety) from "who controls character timing" (a stylistic choice). A poker prototype could expose the same toggle: "Should the table chatter follow the betting math, or should each opponent decide for itself when to needle the player?"
+The pattern matters beyond chess. It separates the question "who controls game state" (always the engine, for safety) from "who controls character timing" (a stylistic choice).
 
-## Convai-Driven Coach Decisions With `updateContext`
+## Coach-Decides Mode With `updateContext`
 
-The Coach-decides path leans on the newer `client.updateContext()` API in `@convai/web-sdk@1.3.0`. Unlike `updateDynamicInfo()`, `updateContext()` accepts a `run_llm` field with three values:
+The Coach-decides path leans on the `client.updateContext()` API in `@convai/web-sdk@1.3.0`. Unlike `updateDynamicInfo()`, `updateContext()` accepts a `run_llm` field with three values:
 
 | `run_llm` | Effect |
 | --- | --- |
@@ -124,26 +85,11 @@ client.updateContext({
 });
 ```
 
-The character then either streams a `bot-llm-text` response (which we render with lipsync just like a scripted turn), or fires the `llmNoResponse` event (which the manager treats as an immediate clean abort and moves on without making the chess board feel frozen).
-
-### Bailing out of phantom "thinking"
-
-In practice, `run_llm: 'auto'` is not perfectly clean. Sometimes Convai accepts the context, briefly flips `isSpeaking` while it deliberates, and then silently decides not to respond without ever emitting `llmNoResponse`. Without intervention, a naive `waitForResponseCompletion` blocks for the full speaking timeout (~20 s) waiting for TTS that never arrives. The board would freeze between every player move.
-
-The fix is a single `isAutoContextTurn` flag passed through the wait helper. When it is on:
-
-- The initial probe is shorter (~2.5 s).
-- If there is no text and no audio after the probe, return immediately — Convai is silently abstaining.
-- Inside the speaking-detection loop, if `isSpeaking` flickers off and there is still no text after ~500 ms, exit fast.
-- The speaking-detection max wait drops from 20 s to 8 s as a safety net.
-
-The result is that the worst-case latency for an unspoken Coach-decides turn drops from ~20 s to ~4 s, and explicit `llmNoResponse` turns are still even faster. When the LLM does choose to speak, the full TTS plays without truncation because the bail logic only fires when no text and no audio ever showed up.
-
-The wider lesson: when you let an LLM decide whether to respond, treat both "yes" and "no" as latency-sensitive paths. Listening for an "I am done thinking and have nothing to say" signal is just as important as listening for "here is my reply."
+The character then either streams a `bot-llm-text` response (which we render with lipsync just like a scripted turn), or fires the `llmNoResponse` event, which the manager treats as a clean abort so the chess board does not feel frozen between moves.
 
 ## Logging Dialogue for Iteration: The Dialogue Dataset
 
-Picking the right balance of dynamic-info content, suppression rules, and "should I speak?" heuristics is an iterative process. The chess prototype ships with a small, fully gated dataset tool to make those decisions evidence-based instead of vibes-based:
+Picking the right balance of dynamic-info content, prompt style, and "should I speak?" heuristics is an iterative process. The prototype ships with a small, fully gated dataset tool to make those decisions evidence-based:
 
 ```bash
 npm run dev:dataset
@@ -152,75 +98,50 @@ npm run dev:dataset
 This is `vite --mode dataset`, which:
 
 - Flips a compile-time `__DATASET_TOOLS_ENABLED__` flag via Vite's `define`.
-- Registers a `/api/dataset` HTTP endpoint in the dev server (`GET`/`POST`/`DELETE`) backed by a local `dataset.json`.
+- Registers a `/api/dataset` HTTP endpoint in the dev server (`GET` / `POST` / `DELETE`) backed by a local `dataset.json`.
 - Surfaces a "Dialogue Dataset" tile on the menu and a small ➕ button on the coach card during gameplay.
 
-When the toolkit is enabled, every LLM-invoked turn (Coach-decides always, Game-decides only on `shouldSpeak` branches, plus all hints and chats) is captured in memory as a `lastExchange`. Hitting ➕ opens a small modal where you label whether the coach *should* have spoken (`silent` / `talk`) for this position. The labelled entry — coach, difficulty, FEN, the exact dynamic-info payload, the prompt, the actual response, the coaching mode, and the human label — is POSTed and persisted.
+When the toolkit is enabled, every LLM-invoked turn (Coach-decides turns, plus the Game-decides turns that actually triggered a prompt, plus all hints and chats) is captured in memory as a `lastExchange`. Hitting ➕ opens a small modal where you label whether the coach *should* have spoken (`silent` / `talk`) for this position. The labelled entry — coach, difficulty, FEN, the exact dynamic-info payload, the prompt, the actual response, the coaching mode, and the human label — is POSTed and persisted.
 
-The Dataset screen then lets you browse logged exchanges with a per-entry board preview, the full LLM input it received, the coach's output, and side-by-side mode/expected badges. That makes it concrete to see:
-
-- Cases where Game-decides stayed silent but the labeller thinks the coach *should* have spoken (heuristic too quiet).
-- Cases where Coach-decides spoke aggressively on routine moves (LLM too eager — usually fixable by tightening the dynamic-info wording).
-- Cases where both modes agreed on silence (good — those are routine positions and the dataset confirms it).
+The Dataset screen then lets you browse logged exchanges with a per-entry board preview, the full LLM input it received, the coach's output, and side-by-side mode/expected badges. That makes it concrete to see where each mode agrees with the labeller and where it drifts.
 
 Because the entire dataset stack is compile-time eliminated in regular `npm run dev`, end users never see any of this in the shipped build. It's a developer-only loop for tuning the most important and most subjective part of an LLM-driven character: when to keep your mouth shut.
 
-The pattern is broadly reusable. Any LLM-driven NPC has a "should I speak now?" decision somewhere. Logging that decision with full context, labelling it after the fact, and inspecting the patterns is how you move from anecdotal tuning ("Magnus felt too talkative in that game") to a measurable, regressable signal.
+The pattern is broadly reusable. Any LLM-driven NPC has a "should I speak now?" decision somewhere. Logging that decision with full context, labelling it after the fact, and inspecting the patterns is how you move from anecdotal tuning to a measurable, regressable signal.
 
-## Poker Example: Four Persistent Characters
+## Multiple Coaches With a Connection Pool
 
-The poker game has four Convai-backed opponents: Vincent, Tyler, Cassandra, and Danielle. Each has its own character ID, client connection, audio renderer, streamed text buffer, speaking state, lipsync index, pending action, and emotion state.
+The chess game supports four selectable coach personas — Magnus, Sofia, Arjun, and Leila — each backed by a separate Convai character ID. The manager keeps a connection pool with one entry per coach, so switching coaches mid-session doesn't pay the cost of reconnecting from scratch. Only one coach is active at a time, and the manager routes speech, dynamic info, and lipsync frames to the active coach.
 
-Instead of reconnecting whenever someone speaks, the poker game connects all four characters at game start and keeps those sessions alive. This matters because reconnecting every turn can add several seconds of latency. Persistent sessions make the poker table feel much more responsive.
+Each coach has its own teaching style, hint approach, curriculum-level descriptions, and explanation depth — all injected into the prompt at runtime so the same Convai pipeline can feel like four different coaching personalities.
 
-Only one character is allowed to speak at a time. The manager tracks the currently speaking character and uses a promise queue so turns do not overlap. It waits for the table to go quiet before sending the next line.
+## TTS-Friendly Chess Notation
 
-The poker turn flow is:
+Raw chess notation like `e4`, `Nf3`, or `a-file` does not sound right when a TTS engine reads it. The letter `e` in `e4` tends to come out as the article "uh", and `a-file` is read as "uh file" rather than "Ay file". The fix is a prompt rule that tells the LLM to always capitalize file letters and separate letters from digits with a space: `"the E file"` instead of `"e-file"`, `"E 4"` instead of `"e4"`, `"knight to F 3"` instead of `"Nf3"`. With a capital letter the TTS reads it as the letter name, not an article or stray sound.
 
-```txt
-Local poker engine reaches AI turn
-  -> choose or request action
-  -> build dynamic table info
-  -> update Convai dynamic info
-  -> send dialogue prompt
-  -> wait for speech and lipsync to finish
-  -> apply poker action
-  -> update UI and event history
-```
+If a word or name still comes out badly despite prompt-level guidance, custom pronunciation entries in the Convai platform dashboard can correct specific terms at the voice level.
 
-The prompt tells the character to use its planned move as private acting direction. That way a character can sound confident, nervous, dismissive, or aggressive without bluntly saying "I call" or "I raise" in the dialogue.
-
-## Chess Example: AI Coaching with Multiple Coaches
-
-The chess game supports multiple selectable coach personas — Magnus, Sofia, Arjun, and Leila — each backed by a separate Convai character ID. The manager keeps a pool of connections, one per coach, and routes speech to the active coach. Only one coach is active at a time, so the flow is similar to a single-character setup but the connection pool allows switching coaches without reconnecting from scratch.
-
-When the player moves, the app asks Stockfish for the coach's reply. Then it builds dynamic coach info and either sends a short scripted prompt (Game-decides mode) or hands the full context to Convai with `run_llm: 'auto'` (Coach-decides mode — see the "Letting the Player Choose Who Decides" section below). Either way, the actual chess move is still chosen by Stockfish so the game stays winnable and the coach's character can't accidentally lose your game.
-
-A key detail is TTS-friendly notation. Raw chess notation like `e4`, `Nf3`, or `a-file` does not sound right when a TTS engine reads it. The letter `e` in `e4` is read as the article "uh", and `a-file` is read as "uh file" rather than "Ay file". The fix is a prompt rule that tells the LLM to always capitalize file letters and separate letters from digits with a space: `"the E file"` instead of `"e-file"`, `"E 4"` instead of `"e4"`, `"knight to F 3"` instead of `"Nf3"`. With a capital letter the TTS reads it as the letter name, not an article or stray sound.
-
-If a word or name still comes out badly despite prompt-level guidance, you can also add custom pronunciation entries in the Convai platform dashboard so the TTS corrects specific terms at the voice level.
-
-The flow is:
+## Chess Turn Flow
 
 ```txt
 Player moves
   -> chess.js validates the move
-  -> Stockfish selects Danielle's reply
+  -> Stockfish selects the coach's reply
   -> app builds dynamic coach context
-  -> Convai generates Danielle's spoken coaching line
-  -> Danielle's avatar speaks with lipsync
+  -> Convai generates the coach's spoken line
+  -> the coach's avatar speaks with lipsync
   -> the planned move is applied to the board
 ```
 
-This lets the coach behave like a real teacher instead of a move generator. The chess engine provides strength and legality. Convai provides personality, voice, explanation, and presence. Each coach persona has its own teaching style, hint approach, curriculum level descriptions, and explanation depth — all injected into the prompt at runtime so the same Convai pipeline can feel like four different coaching personalities.
+This lets the coach behave like a real teacher instead of a move generator. The chess engine provides strength and legality. Convai provides personality, voice, explanation, and presence.
 
 ## Streaming Text and Speech Completion
 
-Convai responses can arrive as streamed text while the voice is playing. Both managers listen for `bot-llm-text` messages and store the latest response text.
+Convai responses can arrive as streamed text while the voice is playing. The manager listens for `bot-llm-text` messages and stores the latest response text.
 
 Speech timing comes from `stateChange`. When `isSpeaking` becomes true, the avatar starts consuming lipsync frames. When it becomes false, the manager flushes the final text and waits for a short silence window before allowing another request.
 
-The chess manager also stores the longest response text seen during the stream. This helps avoid clipped text bubbles when the streamed message updates in chunks.
+The manager also stores the longest response text seen during the stream. This helps avoid clipped text bubbles when the streamed message updates in chunks.
 
 ## Reallusion Avatar Lipsync
 
@@ -248,13 +169,11 @@ Eye_Blink_R
 Brow_Drop_L
 ```
 
-The poker implementation has more character-specific tuning because it supports four avatars. The chess implementation is smaller because it only drives Danielle.
-
 ## Recovering CC4 Morph Target Names
 
 One Reallusion-specific detail is that CC4 GLB exports can store morph target names in `mesh.extras.targetNames`. Three.js may not automatically copy those into `morphTargetDictionary`.
 
-The projects patch this after loading the GLB by reading the raw parser JSON and rebuilding the morph dictionary. Without this step, the model may render correctly, but lipsync will not know which morph target corresponds to which mouth shape.
+The chess app patches this after loading the GLB by reading the raw parser JSON and rebuilding the morph dictionary. Without this step, the model may render correctly, but lipsync will not know which morph target corresponds to which mouth shape.
 
 ```txt
 Load GLB
@@ -271,20 +190,17 @@ This is one of the most important bridge pieces between Reallusion avatars and C
 The clean mental model is:
 
 ```txt
-Game engine = truth
-Convai = character performance
-Dynamic info = live memory
-Actions = structured behavior
-Prompt = direction
-Lipsync = embodiment
+Chess engine  = truth
+Convai        = character performance
+Dynamic info  = live memory
+Prompt        = direction
+Lipsync       = embodiment
 ```
 
-Poker demonstrates the multi-character version: four persistent Convai agents, action support, turn queues, table memory, voice, emotion, and lipsync. Chess demonstrates the focused coach version: one persistent Convai agent, one board state, Stockfish-backed move choice, and short spoken explanations.
-
-Together, they show a practical way to build browser games with believable AI characters. Keep rules and validation in code, use Convai for conversation and performance, and connect the two through dynamic info and optional structured actions.
+The chess prototype demonstrates the focused coach version of this pattern: a persistent Convai connection per coach, a single authoritative board state, Stockfish-backed move choice, and short spoken explanations layered on top. Keep rules and validation in code, use Convai for conversation and performance, and connect the two through dynamic info.
 
 ## Conclusion
 
-Convai works best here as the character layer that sits on top of deterministic game logic. That gives you the safety of local rules and the expressiveness of a live conversational agent. In poker, that means multiple persistent opponents who can speak, react, and even choose structured actions from table state. In chess, that means a coach who can explain moves naturally, stay short and meaningful, and speak with a consistent personality.
+Convai works best here as the character layer that sits on top of deterministic game logic. That gives you the safety of local rules and the expressiveness of a live conversational agent. In this chess prototype, that means a coach who can explain moves naturally, stay short and meaningful, and speak with a consistent personality across four selectable teachers.
 
-The overall pattern is reusable: keep the game authoritative, feed Convai rich state through dynamic info, use actions when you want structured decisions, and use Reallusion avatars to make the response feel embodied. That combination is what makes the demo feel like a game with real characters instead of just a game with chat text.
+The overall pattern is reusable: keep the game authoritative, feed Convai rich state through dynamic info, and use Reallusion avatars to make the response feel embodied. That combination is what makes the demo feel like a chess game with a real coach instead of just a chess board with chat text.

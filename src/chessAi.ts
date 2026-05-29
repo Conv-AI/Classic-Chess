@@ -180,10 +180,22 @@ export function analyzeCoachMoveContext(
     facts.push(`${sideToMoveOwnership.moverPhrase} (side to move) has ${forcing.checks} checking moves, ${forcing.captures} captures, and ${forcing.promotions} promotions available.`);
   }
   if (capturable.length) {
-    facts.push(`${ownership.opponentPossessive} pieces currently capturable by ${sideToMoveOwnership.moverPhrase}: ${capturable.slice(0, 4).map((item) => `${pieceName(item.piece)} on ${formatSquare(item.square)}`).join(', ')}.`);
+    const items = capturable.slice(0, 4).map((item) => {
+      const status = item.defenderCount === 0
+        ? 'UNDEFENDED — truly hanging, free win if captured'
+        : item.attackerCount > item.defenderCount
+          ? `defended ${item.defenderCount}× but attacked ${item.attackerCount}× — winning exchange may exist (NOT hanging)`
+          : `defended ${item.defenderCount}× — capturing it is an exchange, not a free win (DO NOT call it "undefended" or "hanging")`;
+      return `${pieceName(item.piece)} on ${formatSquare(item.square)} [${status}]`;
+    });
+    facts.push(`Pieces ${sideToMoveOwnership.moverPhrase} can target with a capture move: ${items.join('; ')}.`);
   }
   if (movedPiece && attacksMovedPiece) {
-    facts.push(`${ownership.moverPossessive} ${pieceName(movedPiece.type)} that just moved to ${formatSquare(lastMove.to)} is now capturable by ${sideToMoveOwnership.moverPhrase}.`);
+    const movedItem = capturable.find((c) => c.square === lastMove.to);
+    const movedStatus = movedItem && movedItem.defenderCount > 0
+      ? ` (but it is defended ${movedItem.defenderCount}× — not hanging outright)`
+      : ' (UNDEFENDED — it is hanging)';
+    facts.push(`${ownership.moverPossessive} ${pieceName(movedPiece.type)} that just moved to ${formatSquare(lastMove.to)} can now be captured${movedStatus}.`);
   }
   if (repeatedPiece) facts.push('The same non-pawn piece appears to have moved again recently.');
   facts.push(...pawnInfo.facts, ...kingInfo.facts);
@@ -206,19 +218,27 @@ export function analyzeCoachMoveContext(
     else if ((isAdvancedLevel || isExpertLevel) && plannedCaptureValue >= PIECE_VALUES.r) reasons.push('major-coach-capture-available');
   }
 
-  const highestCapturableValue = Math.max(0, ...capturable.map((item) => PIECE_VALUES[item.piece] ?? 0));
-  if (highestCapturableValue >= PIECE_VALUES.q) reasons.push('queen-loose');
-  else if (highestCapturableValue >= PIECE_VALUES.r && !isExpertLevel) reasons.push('rook-loose');
-  else if (highestCapturableValue >= PIECE_VALUES.b && (isNewLevel || isBeginnerLevel || isIntermediateLevel)) reasons.push('minor-piece-loose');
-  if (movedPiece && attacksMovedPiece && PIECE_VALUES[movedPiece.type] >= PIECE_VALUES.b) reasons.push('moved-piece-capturable');
+  // Only count a piece as "loose" if it is truly UNDEFENDED. Defended pieces being
+  // attacked are exchanges, not free wins, and the coach should not call them hanging.
+  const undefendedTargets = capturable.filter((item) => item.defenderCount === 0);
+  const highestHangingValue = Math.max(0, ...undefendedTargets.map((item) => PIECE_VALUES[item.piece] ?? 0));
+  if (highestHangingValue >= PIECE_VALUES.q) reasons.push('queen-loose');
+  else if (highestHangingValue >= PIECE_VALUES.r && !isExpertLevel) reasons.push('rook-loose');
+  else if (highestHangingValue >= PIECE_VALUES.b && (isNewLevel || isBeginnerLevel || isIntermediateLevel)) reasons.push('minor-piece-loose');
+  const movedItem = capturable.find((c) => c.square === lastMove.to);
+  if (movedPiece && movedItem && movedItem.defenderCount === 0 && PIECE_VALUES[movedPiece.type] >= PIECE_VALUES.b) {
+    reasons.push('moved-piece-capturable');
+  }
 
-  if (pawnInfo.kingShieldMoved) reasons.push('king-pawn-shield');
-  if (pawnInfo.aggressivePush && !isExpertLevel) reasons.push('aggressive-pawn-push');
+  if (pawnInfo.directShieldMoved) reasons.push('king-pawn-shield');
+  if (pawnInfo.aggressivePush) reasons.push('aggressive-pawn-push');
   if (pawnInfo.tooManyPawnMoves && (isNewLevel || isBeginnerLevel || isIntermediateLevel)) reasons.push('too-many-pawn-moves');
   if (pawnInfo.openedKingFile && !isExpertLevel) reasons.push('opened-king-file');
   if (kingInfo.unCastledWithCenterOpen && (isBeginnerLevel || isIntermediateLevel || isAdvancedLevel)) reasons.push('uncastled-open-center');
 
-  if (repeatedPiece && (isNewLevel || isBeginnerLevel || isIntermediateLevel)) reasons.push('repeated-piece-move');
+  // Only call out repeated-piece-move for true beginners during the opening — past move 10
+  // it's almost always intentional maneuvering, and pestering the student about it is annoying.
+  if (repeatedPiece && phase === 'opening' && (isNewLevel || isBeginnerLevel)) reasons.push('repeated-piece-move');
   if (lastMove.piece === 'q' && moveNo <= 6 && !isExpertLevel) reasons.push('early-queen-move');
   if (lastMove.piece === 'k' && (lastMove.san === 'O-O' || lastMove.san === 'O-O-O') && (isNewLevel || isBeginnerLevel)) reasons.push('castling');
   if (isNewLevel && moveNo <= 5 && (lastMove.piece === 'n' || lastMove.piece === 'b') && !lastMove.from.endsWith('1')) reasons.push('opening-development');
@@ -251,57 +271,66 @@ function makeDecision(
 }
 
 function reasonAllowedForDifficulty(reason: string, difficultyId: string): boolean {
+  // Always meaningful at every level: game-state events and hung major pieces.
   const common = new Set([
     'checkmate',
     'draw',
     'king-in-check',
-    'student-check',
     'promotion',
     'coach-promotion-available',
-    'coach-check-available',
     'queen-loose',
+    'moved-piece-capturable',
   ]);
   if (common.has(reason)) return true;
+
+  // Brand-new player: anything we can teach about is fair game.
   if (difficultyId === 'new') return true;
+
+  // Beginner: still chatty; skip only the heaviest tactical reasons that need calculation.
   if (difficultyId === 'beginner') {
-    return !['major-capture', 'major-coach-capture-available'].includes(reason);
+    return ![
+      'major-capture',
+      'major-coach-capture-available',
+    ].includes(reason);
   }
+
+  // Intermediate: real teaching themes. Skip every-check narration and queenside-flank noise.
   if (difficultyId === 'intermediate') {
     return [
+      'coach-check-available',
       'meaningful-capture',
       'coach-capture-available',
       'rook-loose',
       'minor-piece-loose',
-      'moved-piece-capturable',
       'king-pawn-shield',
       'aggressive-pawn-push',
       'too-many-pawn-moves',
       'opened-king-file',
       'uncastled-open-center',
-      'repeated-piece-move',
       'early-queen-move',
     ].includes(reason);
   }
+
+  // Advanced: prophylaxis / structural themes only. No routine pawn-push commentary,
+  // no early-queen lectures (Scandinavian etc. is intentional at this rating).
   if (difficultyId === 'advanced') {
     return [
       'meaningful-capture',
       'major-capture',
       'major-coach-capture-available',
       'rook-loose',
-      'moved-piece-capturable',
       'king-pawn-shield',
-      'aggressive-pawn-push',
       'opened-king-file',
       'uncastled-open-center',
-      'early-queen-move',
     ].includes(reason);
   }
+
+  // Expert: only egregious moments — major-piece swings, hung rooks. Pawn-structure
+  // choices and routine checks are below the noise floor at this level.
   return [
     'major-capture',
     'major-coach-capture-available',
     'rook-loose',
-    'moved-piece-capturable',
-    'king-pawn-shield',
   ].includes(reason);
 }
 
@@ -329,10 +358,33 @@ function forcingSummary(game: Chess) {
 }
 
 function capturablePiecesForSideToMove(game: Chess) {
-  return game.moves({ verbose: true })
-    .filter((move) => move.captured)
-    .map((move) => ({ square: move.to, piece: move.captured as string, by: move.san }))
-    .sort((a, b) => (PIECE_VALUES[b.piece] ?? 0) - (PIECE_VALUES[a.piece] ?? 0));
+  const sideToMove = game.turn();
+  const ownerColor: 'w' | 'b' = sideToMove === 'w' ? 'b' : 'w';
+  const seen = new Set<string>();
+  const result: Array<{
+    square: Square;
+    piece: string;
+    by: string;
+    defenderCount: number;
+    attackerCount: number;
+  }> = [];
+  for (const move of game.moves({ verbose: true })) {
+    if (!move.captured) continue;
+    if (seen.has(move.to)) continue;
+    seen.add(move.to);
+    const square = move.to as Square;
+    let defenderCount = 0;
+    let attackerCount = 0;
+    try {
+      defenderCount = (game.attackers(square, ownerColor) ?? []).length;
+      attackerCount = (game.attackers(square, sideToMove) ?? []).length;
+    } catch {
+      defenderCount = 0;
+      attackerCount = 0;
+    }
+    result.push({ square, piece: move.captured as string, by: move.san, defenderCount, attackerCount });
+  }
+  return result.sort((a, b) => (PIECE_VALUES[b.piece] ?? 0) - (PIECE_VALUES[a.piece] ?? 0));
 }
 
 function isRepeatedPieceMove(lastMove: Move, moveHistory: MoveHistoryEntry[]) {
@@ -344,7 +396,7 @@ function isRepeatedPieceMove(lastMove: Move, moveHistory: MoveHistoryEntry[]) {
 function pawnMoveInfo(game: Chess, lastMove: Move, moveHistory: MoveHistoryEntry[]) {
   const facts: string[] = [];
   if (lastMove.piece !== 'p') {
-    return { facts, aggressivePush: false, tooManyPawnMoves: false, kingShieldMoved: false, openedKingFile: false };
+    return { facts, aggressivePush: false, tooManyPawnMoves: false, directShieldMoved: false, openedKingFile: false };
   }
 
   const fromFile = lastMove.from[0];
@@ -352,23 +404,38 @@ function pawnMoveInfo(game: Chess, lastMove: Move, moveHistory: MoveHistoryEntry
   const fromRank = Number(lastMove.from[1]);
   const whiteMove = lastMove.color === 'w';
   const advancement = whiteMove ? toRank - fromRank : fromRank - toRank;
-  const kingShieldMoved = isKingShieldPawnStart(lastMove.from);
-  const openedKingFile = kingShieldMoved && !fileHasPawn(game, fromFile, lastMove.color);
+  const shieldType = kingShieldPawnType(lastMove.from, lastMove.color);
+  const directShieldMoved = shieldType === 'direct';
+  // Only call it an "opened king file" when the pawn was the direct king cover and the
+  // file is now empty — flank pawns vacating their start square aren't an emergency.
+  const openedKingFile = directShieldMoved && !fileHasPawn(game, fromFile, lastMove.color);
   const pawnMovesBySide = moveHistory.filter((move) => move.by === 'You' && move.piece === 'p').length;
   const tooManyPawnMoves = moveNumber(game) <= 10 && pawnMovesBySide >= 5;
-  const flankPawn = ['a', 'b', 'f', 'g', 'h'].includes(fromFile);
+  // Restrict "aggressive pawn push" to kingside-area flank pawns (f/g/h). Queenside flank
+  // (a/b) pushes are usually positional, not a king-safety lecture in this codebase.
+  const kingsideFlank = ['f', 'g', 'h'].includes(fromFile);
   const nonCapture = !lastMove.captured;
-  const deepFlankPush = nonCapture && flankPawn && (whiteMove ? toRank >= 5 : toRank <= 4);
-  const earlyFlankLunge = nonCapture && flankPawn && advancement >= 2 && moveNumber(game) <= 10;
+  const deepFlankPush = nonCapture && kingsideFlank && (whiteMove ? toRank >= 5 : toRank <= 4);
+  const earlyFlankLunge = nonCapture && kingsideFlank && advancement >= 2 && moveNumber(game) <= 10;
   const aggressivePush = deepFlankPush || earlyFlankLunge;
 
-  if (aggressivePush) facts.push(`The last move advanced a flank pawn aggressively to ${formatSquare(lastMove.to)}.`);
-  if (kingShieldMoved) facts.push(`A pawn from the king-side shield moved from ${formatSquare(lastMove.from)}.`);
-  if (openedKingFile) facts.push(`The ${fromFile.toUpperCase()} file no longer has that side's original pawn shield.`);
-  if (advancement >= 2) facts.push(`The pawn advanced ${advancement} ranks in one move.`);
+  const directCoverSquare = whiteMove ? 'G 2' : 'G 7';
+
+  if (shieldType === 'direct') {
+    facts.push(`The ${fromFile.toUpperCase()} pawn that directly covers the king's castling square (${whiteMove ? 'G 1' : 'G 8'} after O-O) was advanced from ${formatSquare(lastMove.from)} to ${formatSquare(lastMove.to)} — this is the most critical king-shield pawn.`);
+  } else if (shieldType === 'flank') {
+    facts.push(`A flank pawn adjacent to the kingside castle position was advanced from ${formatSquare(lastMove.from)} to ${formatSquare(lastMove.to)}. The direct king-cover pawn at ${directCoverSquare} is still in place — do not call this "the pawn that shields the king".`);
+  } else if (aggressivePush) {
+    facts.push(`The last move advanced a kingside-area pawn (${fromFile.toUpperCase()} file) two squares forward to ${formatSquare(lastMove.to)}.`);
+  }
+
+  if (openedKingFile) facts.push(`The ${fromFile.toUpperCase()} file no longer has that side's pawn on it, leaving the file open.`);
+  if (advancement >= 2 && shieldType === null && !aggressivePush) {
+    facts.push(`The pawn advanced ${advancement} ranks in one move.`);
+  }
   if (tooManyPawnMoves) facts.push(`Student has made ${pawnMovesBySide} pawn moves by move ${moveNumber(game)}.`);
 
-  return { facts, aggressivePush, tooManyPawnMoves, kingShieldMoved, openedKingFile };
+  return { facts, aggressivePush, tooManyPawnMoves, directShieldMoved, openedKingFile };
 }
 
 function kingSafetyInfo(game: Chess, lastMove: Move) {
@@ -383,8 +450,14 @@ function kingSafetyInfo(game: Chess, lastMove: Move) {
   return { facts, unCastledWithCenterOpen };
 }
 
-function isKingShieldPawnStart(square: string) {
-  return ['f2', 'g2', 'h2', 'f7', 'g7', 'h7'].includes(square);
+function kingShieldPawnType(square: string, color: 'w' | 'b'): 'direct' | 'flank' | null {
+  // 'direct': the pawn that stands directly in front of the king after O-O (g2/g7)
+  // 'flank': adjacent shield pawns (f2/h2 or f7/h7)
+  const direct = color === 'w' ? 'g2' : 'g7';
+  const flank = color === 'w' ? ['f2', 'h2'] : ['f7', 'h7'];
+  if (square === direct) return 'direct';
+  if (flank.includes(square)) return 'flank';
+  return null;
 }
 
 function fileHasPawn(game: Chess, file: string, color: 'w' | 'b') {
@@ -422,6 +495,7 @@ export function buildDynamicCoachInfo(
   coach?: Pick<CoachConfig, 'name' | 'title' | 'chessFocus' | 'voiceStyle'> | string,
   difficulty?: Pick<DifficultyConfig, 'id' | 'label' | 'elo' | 'stockfishSkill' | 'curriculum' | 'explanationDepth'>,
   moveHistory: Array<{ san: string; from: string; to: string; piece: string; captured?: string; by: string }> = [],
+  recentlySpokenTopics: string[] = [],
 ) {
   const coachName = typeof coach === 'string' ? coach : coach?.name ?? 'Coach';
   const coachInfo = typeof coach === 'object'
@@ -431,7 +505,8 @@ export function buildDynamicCoachInfo(
     ? `Student level: ${difficulty.label}, approximate rating ${difficulty.elo}, Stockfish skill ${difficulty.stockfishSkill}. Teaching curriculum for this level: ${difficulty.curriculum}. Explanation depth: ${difficulty.explanationDepth}.`
     : '';
   // The student always plays White; I (the coach) always play Black.
-  const roleContext = 'Role context: In this game I (the coach) play Black, and the student plays White. The facts below use "I/my" for my pieces (Black) and "the student/the student\'s" for the student\'s pieces (White). When a fact says "the student captured my queen with their bishop", that means the STUDENT now has a winning capture and I (the coach) lost the queen — I must never invert this and claim I gave up a piece for theirs.';
+  const roleContext = 'Role context: In this game I (the coach) play Black, and the student plays White. The facts below use "I/my" for my pieces (Black) and "the student/the student\'s" for the student\'s pieces (White). When a fact says "the student captured my queen with their bishop", that means the STUDENT now has a winning capture and I (the coach) lost the queen — I must never invert this. Equally critical the other direction: when a fact or history entry says "I (the coach) captured the student\'s queen with my knight", that means I (the coach) made that capture — I must NEVER tell the student "your knight captured my queen" or any inversion of who owns the capturing piece.';
+  const attributionCheatsheet = buildAttributionCheatsheet(moveHistory);
   const turn = game.turn() === 'w' ? 'White to move' : 'Black to move';
   const status = game.isCheckmate()
     ? 'checkmate'
@@ -455,9 +530,13 @@ export function buildDynamicCoachInfo(
   const positionFacts = context.facts.length
     ? `Position facts: ${context.facts.join(' ')}`
     : '';
+  const recentTopicsNotice = recentlySpokenTopics.length
+    ? `RECENTLY COVERED TOPICS (do not repeat — student already heard these): ${recentlySpokenTopics.map(topicLabel).join(', ')}. If the only available teaching point falls under one of these, stay silent or pick a fresh angle.`
+    : '';
   return [
     coachInfo,
     roleContext,
+    attributionCheatsheet,
     levelInfo,
     turn,
     `Position status: ${status}.`,
@@ -469,15 +548,53 @@ export function buildDynamicCoachInfo(
     lastMoveInfo,
     moveHint,
     positionFacts,
+    recentTopicsNotice,
     'Speech rule: speak in first person as the coach and address the student as "you". If the position is routine or there is no useful chess lesson, stay silent. Do not blandly describe what the student just moved. If I have a check, winning capture, or decisive tactic available (as shown in my planned move), I may reference that I see a strong response using "I can" language — but do not announce the exact move. Speak only for a real teaching moment: a blunder, tactic, missed threat, principle, weak square, pawn structure, development, king safety, or endgame idea. Never write raw chess notation - capitalize file letters and separate letter from digit: "the A file", "E 4", "knight to F 3", "bishop takes E 5". TTS needs the capital letter so it reads it as the letter name, not the article.',
   ].filter(Boolean).join(' ').trim();
+}
+
+function buildAttributionCheatsheet(
+  moveHistory: Array<{ san: string; from: string; to: string; piece: string; captured?: string; by: string }>,
+): string {
+  const recent = moveHistory.slice(-12);
+  const myCaptures: string[] = [];
+  const studentCaptures: string[] = [];
+  for (const m of recent) {
+    if (!m.captured) continue;
+    if (m.by === 'You') {
+      studentCaptures.push(`the student's ${pieceName(m.piece)} took my ${pieceName(m.captured)} on ${formatSquare(m.to)} (${m.san})`);
+    } else {
+      myCaptures.push(`my ${pieceName(m.piece)} took the student's ${pieceName(m.captured)} on ${formatSquare(m.to)} (${m.san})`);
+    }
+  }
+  const lines = [
+    'ATTRIBUTION CHEATSHEET (read carefully before speaking):',
+    'I am the coach playing BLACK. The student plays WHITE. In FEN, lowercase letters are MY pieces, uppercase are the STUDENT\'s.',
+    `Captures I (the coach) have made recently: ${myCaptures.length ? myCaptures.join('; ') : 'none.'}`,
+    `Captures the STUDENT has made recently: ${studentCaptures.length ? studentCaptures.join('; ') : 'none.'}`,
+    'Never invert these. If I captured the student\'s queen, that capture is MINE — I must not say "your knight took my queen" or any phrasing that swaps owners.',
+  ];
+  return lines.join(' ');
+}
+
+function topicLabel(reason: string): string {
+  const map: Record<string, string> = {
+    'uncastled-open-center': 'king-still-in-center / castling priority',
+    'king-pawn-shield': 'king-shield pawn moved',
+    'opened-king-file': 'open file near the king',
+    'too-many-pawn-moves': 'too many pawn moves in the opening',
+    'repeated-piece-move': 'moving the same piece twice',
+    'aggressive-pawn-push': 'aggressive flank pawn push',
+    'early-queen-move': 'early queen sortie',
+  };
+  return map[reason] ?? reason;
 }
 
 export function buildCoachInstruction(coach: CoachConfig, difficulty: DifficultyConfig, mode: 'move' | 'hint' | 'chat') {
   const base = [
     `I am ${coach.name}, ${coach.title}, speaking directly to my chess student.`,
     `I must speak in first person as myself: use "I" for my own coaching view and "you" for the student.`,
-    'I must not say "the player", "they", "them", or "the coach" in the spoken answer.',
+    'Pronoun rule: "you/your" ALWAYS refers to the student I am talking to. I am the student\'s opponent in this game, so I must NEVER call the student "your opponent" — that would be calling them their own opponent. I must NEVER refer to the student in third person ("the player", "the opponent", "your opponent", "someone", "people", "they", "them", "their", "the white side", "white", "the student"). I must NEVER refer to myself in third person ("the coach", "your coach"). Only "I/my" for me and "you/your" for the student.',
     `Current student level: ${difficulty.label} (${difficulty.elo}), Stockfish skill ${difficulty.stockfishSkill}.`,
     `Teach at this level using this curriculum: ${difficulty.curriculum}.`,
     `Depth rule: ${difficulty.explanationDepth}`,

@@ -1,13 +1,14 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { createPortal } from 'react-dom';
 import { Chess, type Move, type Square } from 'chess.js';
-import { ChevronsLeft, ChevronsRight, ChevronLeft, ChevronRight } from 'lucide-react';
+import { ChevronsLeft, ChevronsRight, ChevronLeft, ChevronRight, Clipboard } from 'lucide-react';
 import { analyzeGame } from './analysis';
 import { getCoach, getDifficulty, type CoachId, type DifficultyId } from './coachConfig';
 import { createCustomCoach, fetchLanguages, fetchVoices, hasConvaiApiKey, MODEL_OPTIONS, type LanguageOption, type VoiceOption } from './convaiCoreApi';
 import { analyzeCoachMoveContext, buildCoachInstruction, buildDynamicCoachInfo, legalTargets } from './chessAi';
 import { chessConvai } from './convaiManager';
-import { debugLog } from './debugLog';
-import CoachCard from './DanielleCoach';
+import { copyLogToClipboard, debugLog } from './debugLog';
+import CoachCard from './CoachCard';
 import DatasetScreen from './DatasetScreen';
 import LoadingScreen from './LoadingScreen';
 import MenuScreen from './MenuScreen';
@@ -25,6 +26,7 @@ import {
   saveSession,
   type AnalysisSummary,
   type CoachingControlMode,
+  type KeyMoment,
   type MoveSnapshot,
   type StoredGameSession,
 } from './storage';
@@ -96,7 +98,6 @@ function App() {
   const [coachingControlMode, setCoachingControlModeState] = useState<CoachingControlMode>(() => loadCoachingControlMode());
   const [loadingProgress, setLoadingProgress] = useState(0);
   const [loadingStep, setLoadingStep] = useState('Setting up the board...');
-  const [prewarmCoachId, setPrewarmCoachId] = useState<CoachId | null>(null);
   const avatarReadyResolverRef = useRef<(() => void) | null>(null);
   const [sessions, setSessions] = useState<StoredGameSession[]>(() => loadSessions());
   const coach = getCoach(coachId);
@@ -128,7 +129,6 @@ function App() {
     chessConvai.unlockAudio();
     const selectedCoach = coach;
     setScreen('loading');
-    setPrewarmCoachId(selectedCoach.id);
     setLoadingProgress(18);
     setLoadingStep(`Loading ${selectedCoach.name} and the chess room...`);
     const avatarReady = new Promise<void>((resolve) => {
@@ -147,41 +147,34 @@ function App() {
     setSessions(loadSessions());
   }, []);
 
-  if (screen === 'loading') {
-    const prewarmCoach = prewarmCoachId ? getCoach(prewarmCoachId) : coach;
-    return (
-      <LoadingScreen progress={loadingProgress} step={loadingStep}>
-        <CoachCard
-          coach={prewarmCoach}
-          status="Preparing portrait..."
-          onReady={() => {
+  let body: ReactNode;
+  if (screen === 'loading' || screen === 'game') {
+    body = (
+      <>
+        <ChessGame
+          coachId={coachId}
+          difficultyId={difficultyId}
+          coachingControlMode={coachingControlMode}
+          onBackToMenu={() => {
+            refreshSessions();
+            setScreen('menu');
+          }}
+          onSessionsChanged={refreshSessions}
+          onCoachReady={() => {
             avatarReadyResolverRef.current?.();
             avatarReadyResolverRef.current = null;
           }}
+          key={`game-${coachId}-${coachingControlMode}`}
         />
-      </LoadingScreen>
+        {screen === 'loading' && (
+          <LoadingScreen progress={loadingProgress} step={loadingStep} />
+        )}
+      </>
     );
-  }
-  if (screen === 'game') {
-    return (
-      <ChessGame
-        coachId={coachId}
-        difficultyId={difficultyId}
-        coachingControlMode={coachingControlMode}
-        onBackToMenu={() => {
-          refreshSessions();
-          setScreen('menu');
-        }}
-        onSessionsChanged={refreshSessions}
-        key={`game-${coachId}-${coachingControlMode}`}
-      />
-    );
-  }
-  if (screen === 'puzzles') {
-    return <PuzzleScreen coachId={coachId} difficultyId={difficultyId} onBack={() => setScreen('menu')} key={`puzzles-${coachId}`} />;
-  }
-  if (screen === 'games') {
-    return (
+  } else if (screen === 'puzzles') {
+    body = <PuzzleScreen coachId={coachId} difficultyId={difficultyId} onBack={() => setScreen('menu')} key={`puzzles-${coachId}`} />;
+  } else if (screen === 'games') {
+    body = (
       <MyGamesScreen
         sessions={sessions}
         onBack={() => {
@@ -194,28 +187,58 @@ function App() {
         }}
       />
     );
+  } else if (screen === 'creator') {
+    body = <CustomCoachCreator onBack={() => setScreen('menu')} />;
+  } else if (screen === 'dataset' && DATASET_TOOLS_ENABLED) {
+    body = <DatasetScreen onBack={() => setScreen('menu')} />;
+  } else {
+    body = (
+      <MenuScreen
+        coachId={coachId}
+        difficultyId={difficultyId}
+        savedGameCount={sessions.length}
+        coachingControlMode={coachingControlMode}
+        onCoachChange={setCoachId}
+        onDifficultyChange={setDifficultyId}
+        onCoachingControlModeChange={handleCoachingControlModeChange}
+        onQuickPlay={() => void startQuickPlay()}
+        onPuzzles={() => setScreen('puzzles')}
+        onGames={() => {
+          refreshSessions();
+          setScreen('games');
+        }}
+        onCreator={() => setScreen('creator')}
+        onDataset={DATASET_TOOLS_ENABLED ? () => setScreen('dataset') : undefined}
+      />
+    );
   }
-  if (screen === 'creator') return <CustomCoachCreator onBack={() => setScreen('menu')} />;
-  if (screen === 'dataset' && DATASET_TOOLS_ENABLED) return <DatasetScreen onBack={() => setScreen('menu')} />;
 
   return (
-    <MenuScreen
-      coachId={coachId}
-      difficultyId={difficultyId}
-      savedGameCount={sessions.length}
-      coachingControlMode={coachingControlMode}
-      onCoachChange={setCoachId}
-      onDifficultyChange={setDifficultyId}
-      onCoachingControlModeChange={handleCoachingControlModeChange}
-      onQuickPlay={() => void startQuickPlay()}
-      onPuzzles={() => setScreen('puzzles')}
-      onGames={() => {
-        refreshSessions();
-        setScreen('games');
-      }}
-      onCreator={() => setScreen('creator')}
-      onDataset={DATASET_TOOLS_ENABLED ? () => setScreen('dataset') : undefined}
-    />
+    <>
+      {body}
+      <CopyLogsButton />
+    </>
+  );
+}
+
+function CopyLogsButton() {
+  const [copied, setCopied] = useState(false);
+  const onCopy = async () => {
+    try {
+      await copyLogToClipboard();
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1400);
+    } catch (err) {
+      console.warn('Failed to copy logs', err);
+    }
+  };
+  return (
+    <div className="debug-copy-wrap">
+      <button className="debug-copy-button" type="button" onClick={onCopy} title="Copy debug logs" aria-label="Copy debug logs">
+        <Clipboard size={16} strokeWidth={2.4} />
+      </button>
+      {copied && <span className="debug-copy-tooltip">Copied!</span>}
+    </div>
   );
 }
 
@@ -225,12 +248,14 @@ function ChessGame({
   coachingControlMode,
   onBackToMenu,
   onSessionsChanged,
+  onCoachReady,
 }: {
   coachId: CoachId;
   difficultyId: DifficultyId;
   coachingControlMode: CoachingControlMode;
   onBackToMenu: () => void;
   onSessionsChanged: () => void;
+  onCoachReady?: () => void;
 }) {
   const coach = getCoach(coachId);
   const difficulty = getDifficulty(difficultyId);
@@ -248,7 +273,20 @@ function ChessGame({
   const [analysisPending, setAnalysisPending] = useState(false);
   const sessionIdRef = useRef(createSessionId());
   const analysisStartedRef = useRef(false);
+  const gameOverShownRef = useRef(false);
   const moveListRef = useRef<HTMLOListElement | null>(null);
+  // Track which speech reasons were last fired and at which fullmove number, so we can
+  // suppress repeated positional advice (e.g. "your king is still in the center").
+  const spokenReasonsRef = useRef<Map<string, number>>(new Map());
+
+  const [coachResponding, setCoachResponding] = useState(false);
+  const [resigned, setResigned] = useState(false);
+  const [showResignConfirm, setShowResignConfirm] = useState(false);
+  const [showGameOverModal, setShowGameOverModal] = useState(false);
+  const [showAnalysis, setShowAnalysis] = useState(false);
+  const [selectedMoveIdx, setSelectedMoveIdx] = useState<number | null>(null);
+  const [coachGuidance, setCoachGuidance] = useState('');
+  const [guidanceLoading, setGuidanceLoading] = useState(false);
 
   const [lastExchange, setLastExchange] = useState<DialogueExchange | null>(null);
   const [toastMessage, setToastMessage] = useState('');
@@ -305,7 +343,13 @@ function ChessGame({
   }, [game, selected]);
 
   const lastMove = history[history.length - 1];
-  const status = thinking ? `${coach.name} is calculating...` : getStatus(game, coach.name);
+  const status = thinking
+    ? `${coach.name} is calculating...`
+    : (coachResponding || guidanceLoading)
+      ? `${coach.name} is thinking...`
+      : resigned
+        ? `You resigned. ${coach.name} wins.`
+        : getStatus(game, coach.name);
 
   useEffect(() => {
     return chessConvai.onResponse((response) => {
@@ -325,8 +369,10 @@ function ChessGame({
     onSessionsChanged();
   }, [analysis, coachId, difficultyId, game, hintsUsed, history, onSessionsChanged]);
 
+  const gameEnded = game.isGameOver() || resigned;
+
   useEffect(() => {
-    if (!history.length || !game.isGameOver() || analysisStartedRef.current) return;
+    if (!history.length || !gameEnded || analysisStartedRef.current) return;
     analysisStartedRef.current = true;
     setAnalysisPending(true);
     void analyzeGame(history, game.fen(), async (fen) => {
@@ -336,7 +382,14 @@ function ChessGame({
       setAnalysis(summary);
       setAnalysisPending(false);
     });
-  }, [difficulty.stockfishSkill, game, history]);
+  }, [difficulty.stockfishSkill, game, history, gameEnded]);
+
+  useEffect(() => {
+    if (!gameEnded || !history.length || gameOverShownRef.current) return;
+    gameOverShownRef.current = true;
+    const timer = setTimeout(() => setShowGameOverModal(true), resigned ? 250 : 900);
+    return () => clearTimeout(timer);
+  }, [gameEnded, history.length, resigned]);
 
   function persistCurrentSession(
     currentGame: Chess,
@@ -354,7 +407,7 @@ function ChessGame({
       mode: 'quick-play',
       coachId: selectedCoachId,
       difficultyId: selectedDifficultyId,
-      result: resultLabel(currentGame, coach.name),
+      result: resultLabel(currentGame, coach.name, resigned),
       finalFen: currentGame.fen(),
       hintsUsed: hintCount,
       moves,
@@ -365,6 +418,8 @@ function ChessGame({
   function resetGame() {
     sessionIdRef.current = createSessionId();
     analysisStartedRef.current = false;
+    gameOverShownRef.current = false;
+    spokenReasonsRef.current.clear();
     setGame(new Chess());
     setSelected(null);
     setHistory([]);
@@ -375,6 +430,14 @@ function ChessGame({
     setHintsUsed(0);
     setAnalysis(null);
     setAnalysisPending(false);
+    setCoachResponding(false);
+    setResigned(false);
+    setShowResignConfirm(false);
+    setShowGameOverModal(false);
+    setShowAnalysis(false);
+    setSelectedMoveIdx(null);
+    setCoachGuidance('');
+    setGuidanceLoading(false);
   }
 
   function makePlayerMove(from: Square, to: Square) {
@@ -401,11 +464,13 @@ function ChessGame({
   async function makeCoachMove(fen: string, playerMove?: Move, moveHistory: MoveRecord[] = history) {
     const next = new Chess(fen);
     const planned = await stockfishEngine.bestMove(next.fen(), difficulty.moveTimeMs, difficulty.stockfishSkill);
-    const dynamicInfo = buildDynamicCoachInfo(next, planned, playerMove, coach, difficulty, moveHistory);
+    const fullMoveNo = Number(next.fen().split(' ')[5]);
+    const recentTopics = recentlySpokenTopics(spokenReasonsRef.current, fullMoveNo);
+    const dynamicInfo = buildDynamicCoachInfo(next, planned, playerMove, coach, difficulty, moveHistory, recentTopics);
     const dynamicContext = `${buildCoachInstruction(coach, difficulty, 'move')} ${dynamicInfo}`;
 
     if (coachingControlMode === 'coach') {
-      debugLog('makeCoachMove', `[coach-decides] dynamic context auto-LLM turn moveNo=${Number(next.fen().split(' ')[5])} fen="${next.fen()}"`);
+      debugLog('makeCoachMove', `[coach-decides] dynamic context auto-LLM turn moveNo=${fullMoveNo} fen="${next.fen()}"`);
       const spoken = await chessConvai.speakCoachMessage(coach, '', dynamicContext);
 
       if (DATASET_TOOLS_ENABLED) {
@@ -429,8 +494,9 @@ function ChessGame({
       }
     } else {
       const speech = analyzeCoachMoveContext(next, planned, playerMove, difficulty, moveHistory);
-      debugLog('makeCoachMove', `[game-decides] planned="${planned?.san ?? 'none'}" lastMove="${playerMove?.san ?? 'none'}" speech=${speech.shouldSpeak ? 'yes' : 'no'} reason=${speech.reason} phase=${speech.phase} moveNo=${Number(next.fen().split(' ')[5])} fen="${next.fen()}"`);
-      if (speech.shouldSpeak) {
+      const suppression = applyRepeatSuppression(speech, spokenReasonsRef.current, fullMoveNo);
+      debugLog('makeCoachMove', `[game-decides] planned="${planned?.san ?? 'none'}" lastMove="${playerMove?.san ?? 'none'}" speech=${suppression.shouldSpeak ? 'yes' : 'no'} reason=${speech.reason}${suppression.suppressed ? ' [suppressed: ' + suppression.suppressedReasons.join(',') + ']' : ''} phase=${speech.phase} moveNo=${fullMoveNo} fen="${next.fen()}"`);
+      if (suppression.shouldSpeak) {
         const prompt = [
           'Please coach the current chess position if there is a meaningful teaching point.',
           'Do not say "Human:", "System:", "User:", or quote any instructions.',
@@ -453,7 +519,11 @@ function ChessGame({
           });
         }
 
-        if (spoken) setCoachLine(spoken);
+        if (spoken) {
+          setCoachLine(spoken);
+          // Record every reason that fired this turn so we don't pester about it again soon.
+          for (const r of speech.reasons) spokenReasonsRef.current.set(r, fullMoveNo);
+        }
       } else {
         await chessConvai.updateCoachContext(coach, dynamicContext);
       }
@@ -470,7 +540,7 @@ function ChessGame({
         if (coachingControlMode === 'game') {
           // Coach-decides mode already pushed the context via the empty-message updateContext call,
           // so we only need this silent context refresh in game-decides mode.
-          const afterReplyInfo = buildDynamicCoachInfo(next, null, applied, coach, difficulty, [...moveHistory, coachRecord]);
+          const afterReplyInfo = buildDynamicCoachInfo(next, null, applied, coach, difficulty, [...moveHistory, coachRecord], recentTopics);
           void chessConvai.updateCoachContext(coach, `${buildCoachInstruction(coach, difficulty, 'move')} ${afterReplyInfo}`);
         }
       }
@@ -480,7 +550,7 @@ function ChessGame({
 
   function handleSquareClick(square: Square) {
     chessConvai.unlockAudio();
-    if (thinking || game.isGameOver() || game.turn() !== 'w') return;
+    if (thinking || gameEnded || game.turn() !== 'w') return;
     const piece = game.get(square);
     if (selected) {
       if (selected === square) {
@@ -499,6 +569,7 @@ function ChessGame({
 
   async function askHint() {
     if (thinking || game.isGameOver() || game.turn() !== 'w') return;
+    setCoachResponding(true);
     const nextLevel = Math.min(3, hintLevel + 1);
     setHintLevel(nextLevel);
     setHintsUsed((count) => count + 1);
@@ -530,12 +601,14 @@ function ChessGame({
     }
 
     if (spoken) setCoachLine(spoken);
+    setCoachResponding(false);
   }
 
   async function sendChat() {
     const text = chatInput.trim();
     if (!text) return;
     setChatInput('');
+    setCoachResponding(true);
     const dynamicInfo = buildDynamicCoachInfo(game, null, lastMove ? moveRecordToMoveLike(lastMove) : null, coach, difficulty);
     const spoken = await chessConvai.sendUserChat(
       coach,
@@ -559,6 +632,219 @@ function ChessGame({
     }
 
     if (spoken) setCoachLine(spoken);
+    setCoachResponding(false);
+  }
+
+  async function askAboutMove(moveIdx: number) {
+    const move = history[moveIdx];
+    if (!move || guidanceLoading) return;
+    setGuidanceLoading(true);
+    setCoachGuidance('');
+
+    const moveNumber = Math.ceil((moveIdx + 1) / 2);
+    const km = analysis?.keyMoments.find((m) => m.moveNumber === moveNumber && move.color === 'w');
+    const quality = km ? km.label.toLowerCase() : (move.color === 'w' ? 'solid' : 'opponent');
+
+    const dynamicCtx = [
+      `FEN before the move: ${move.fenBefore}`,
+      `Move ${moveNumber}: ${move.by} played ${move.san}.`,
+      quality !== 'opponent' && quality !== 'solid' ? `This was classified as a ${quality}.` : '',
+      km?.bestMove ? `Stockfish preferred ${km.bestMove} in this position.` : '',
+      km?.description ?? '',
+    ].filter(Boolean).join(' ');
+
+    const prompt = quality === 'solid' || quality === 'opponent'
+      ? `In 2 sentences, explain what makes ${move.san} on move ${moveNumber} a reasonable choice and what chess principle it follows.`
+      : `In 2–3 sentences, explain concretely why ${move.san} on move ${moveNumber} was a ${quality}${km?.bestMove ? ` and what makes ${km.bestMove} stronger` : ''}.`;
+
+    const spoken = await chessConvai.speakCoachMessage(coach, prompt, dynamicCtx);
+    if (spoken) {
+      setCoachLine(spoken);
+      setCoachGuidance(spoken);
+    }
+    setGuidanceLoading(false);
+  }
+
+  const selectedBoardGame = useMemo(() => {
+    if (selectedMoveIdx === null || !history[selectedMoveIdx]) return null;
+    return new Chess(history[selectedMoveIdx].fenAfter);
+  }, [selectedMoveIdx, history]);
+
+  if (showAnalysis) {
+    const movePairs = buildMovePairs(history);
+    const errorMap = buildErrorMap(analysis?.keyMoments ?? []);
+
+    return (
+      <main className="game-screen">
+        <header className="topbar">
+          <button onClick={() => setShowAnalysis(false)}>← Back</button>
+          <h1>Post-Game Analysis</h1>
+          <div className="topbar-actions">
+            <button className="ghost-action" onClick={resetGame}>New Game</button>
+          </div>
+        </header>
+
+        <div className="app-shell analysis-shell">
+          <CoachCard
+            coach={coach}
+            status={status}
+            lastLine={coachLine}
+            onAddToDataset={DATASET_TOOLS_ENABLED ? openSaveModal : undefined}
+          />
+
+          <div className="analysis-panel invisible-scroll">
+
+            <div className="analysis-header">
+              <h2>{resultLabel(game, coach.name, resigned)}</h2>
+              <p className="analysis-meta">
+                {analysis?.opening ?? 'Identifying opening…'} · {Math.ceil(history.length / 2)} move{Math.ceil(history.length / 2) !== 1 ? 's' : ''}
+              </p>
+            </div>
+
+            {/* Performance */}
+            <section className="analysis-section">
+              <p className="eyebrow">Your Performance</p>
+              {analysisPending && <p className="muted-text">Stockfish is reviewing your moves…</p>}
+              {analysis && (
+                <div className="perf-grid">
+                  <div className="perf-card">
+                    <div className="perf-score">{analysis.whiteAccuracy}%</div>
+                    <div className="perf-label">Accuracy</div>
+                    <div className="perf-desc">{describeAccuracy(analysis.whiteAccuracy)}</div>
+                  </div>
+                  <div className="perf-card">
+                    <div className="error-badges">
+                      {analysis.blunders > 0 && <span className="err-badge blunder">{analysis.blunders} blunder{analysis.blunders > 1 ? 's' : ''}</span>}
+                      {analysis.mistakes > 0 && <span className="err-badge mistake">{analysis.mistakes} mistake{analysis.mistakes > 1 ? 's' : ''}</span>}
+                      {analysis.inaccuracies > 0 && <span className="err-badge inaccuracy">{analysis.inaccuracies} inaccurac{analysis.inaccuracies > 1 ? 'ies' : 'y'}</span>}
+                      {analysis.blunders === 0 && analysis.mistakes === 0 && analysis.inaccuracies === 0 && (
+                        <span className="err-badge clean">Clean game</span>
+                      )}
+                    </div>
+                    <div className="error-legend">
+                      <span className="legend-item"><span className="err-dot blunder" />Blunder — serious error that changes the outcome</span>
+                      <span className="legend-item"><span className="err-dot mistake" />Mistake — misses a clearly better option</span>
+                      <span className="legend-item"><span className="err-dot inaccuracy" />Inaccuracy — slightly suboptimal, still reasonable</span>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </section>
+
+            {/* Move Timeline */}
+            <section className="analysis-section">
+              <p className="eyebrow">Move Timeline</p>
+              <p className="section-hint">Click any move to review it — red = blunder, orange = mistake, yellow = inaccuracy</p>
+              <div className="move-timeline">
+                {movePairs.map(([w, b], pairIdx) => (
+                  <div key={pairIdx} className="move-pair">
+                    <span className="move-number-label">{pairIdx + 1}.</span>
+                    {w && (
+                      <button
+                        className={`move-chip ${getChipClass(w.historyIdx, history, errorMap)} ${selectedMoveIdx === w.historyIdx ? 'selected' : ''}`}
+                        onClick={() => { setSelectedMoveIdx(w.historyIdx); setCoachGuidance(''); }}
+                      >
+                        {w.san}
+                      </button>
+                    )}
+                    {b && (
+                      <button
+                        className={`move-chip coach-chip ${selectedMoveIdx === b.historyIdx ? 'selected' : ''}`}
+                        onClick={() => { setSelectedMoveIdx(b.historyIdx); setCoachGuidance(''); }}
+                      >
+                        {b.san}
+                      </button>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </section>
+
+            {/* Selected move detail */}
+            {selectedMoveIdx !== null && selectedBoardGame && (() => {
+              const move = history[selectedMoveIdx];
+              const moveNumber = Math.ceil((selectedMoveIdx + 1) / 2);
+              const km = analysis?.keyMoments.find((m) => m.moveNumber === moveNumber && move?.color === 'w');
+              const quality = km ? km.label : (move?.color === 'w' ? 'Good' : null);
+              return (
+                <section className="analysis-section move-detail-section">
+                  <p className="eyebrow">Move {moveNumber} — {history[selectedMoveIdx]?.by}: {history[selectedMoveIdx]?.san}</p>
+                  <div className="move-detail-layout">
+                    <div className="mini-board-wrap">
+                      <ChessBoard
+                        game={selectedBoardGame}
+                        lastMove={move ? { from: move.from, to: move.to } : null}
+                      />
+                    </div>
+                    <div className="move-detail-info">
+                      {km ? (
+                        <div className={`moment-info ${km.label.toLowerCase()}`}>
+                          <strong>{km.label}</strong> — {km.description}
+                          {km.bestMove && <p className="better-move">Better: <code>{km.bestMove}</code></p>}
+                        </div>
+                      ) : quality === 'Good' ? (
+                        <div className="moment-info good">
+                          <strong>Good move</strong> — no better option found by Stockfish in this position
+                        </div>
+                      ) : null}
+                      <div className="guidance-area">
+                        {coachGuidance ? (
+                          <p className="coach-guidance-text">{coachGuidance}</p>
+                        ) : guidanceLoading ? (
+                          <p className="muted-text">{coach.name} is analyzing this position…</p>
+                        ) : (
+                          <button className="primary-action" onClick={() => void askAboutMove(selectedMoveIdx)}>
+                            Ask {coach.name} about this move
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                </section>
+              );
+            })()}
+
+            {/* Key Moments */}
+            {analysis && analysis.keyMoments.length > 0 && (
+              <section className="analysis-section">
+                <p className="eyebrow">Key Moments</p>
+                {analysis.keyMoments.map((km, idx) => {
+                  const mIdx = history.findIndex((m, i) => m.color === 'w' && Math.ceil((i + 1) / 2) === km.moveNumber);
+                  return (
+                    <div
+                      key={idx}
+                      className={`moment-item ${km.label.toLowerCase()}`}
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => { if (mIdx !== -1) { setSelectedMoveIdx(mIdx); setCoachGuidance(''); }}}
+                      onKeyDown={(e) => { if (e.key === 'Enter' && mIdx !== -1) { setSelectedMoveIdx(mIdx); setCoachGuidance(''); }}}
+                    >
+                      <div className="moment-header">
+                        <span className={`moment-badge ${km.label.toLowerCase()}`}>{km.label}</span>
+                        <span className="moment-movenumber">Move {km.moveNumber}</span>
+                      </div>
+                      <p>{km.description}</p>
+                      {km.bestMove && <p className="better-move">Better: <code>{km.bestMove}</code></p>}
+                    </div>
+                  );
+                })}
+              </section>
+            )}
+
+            {/* Coach Tips */}
+            {analysis && analysis.tips.length > 0 && (
+              <section className="analysis-section">
+                <p className="eyebrow">Coach's Tips for Next Time</p>
+                <ul className="tips-list">
+                  {analysis.tips.map((tip, idx) => <li key={idx}>{tip}</li>)}
+                </ul>
+              </section>
+            )}
+
+          </div>
+        </div>
+      </main>
+    );
   }
 
   return (
@@ -578,6 +864,7 @@ function ChessGame({
           coach={coach}
           status={status}
           lastLine={coachLine || hintText}
+          onReady={onCoachReady}
           onAddToDataset={DATASET_TOOLS_ENABLED ? openSaveModal : undefined}
         />
 
@@ -597,10 +884,17 @@ function ChessGame({
             <h2>{game.turn() === 'w' ? 'Your move' : `${coach.name} to move`}</h2>
             <p>{getStatus(game, coach.name)}</p>
             {hintText && <p className="hint-text">{hintText}</p>}
-            <button className="primary-action" onClick={() => void askHint()} disabled={game.turn() !== 'w' || thinking || game.isGameOver()}>
+            <button className="primary-action" onClick={() => void askHint()} disabled={game.turn() !== 'w' || thinking || gameEnded}>
               Ask Hint {hintLevel ? `(${hintLevel}/3)` : ''}
             </button>
             <button className="ghost-action" onClick={resetGame}>New game</button>
+            <button
+              className="ghost-action danger-action"
+              onClick={() => { if (!gameEnded) setShowResignConfirm(true); }}
+              disabled={gameEnded}
+            >
+              Resign
+            </button>
           </div>
 
           <div className="panel-card move-card">
@@ -615,11 +909,56 @@ function ChessGame({
             </ol>
           </div>
 
-          {(analysisPending || analysis) && (
-            <AnalysisPanel analysis={analysis} pending={analysisPending} />
-          )}
         </aside>
       </div>
+
+      {showGameOverModal && createPortal(
+        <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="gameover-title">
+          <div className="gameover-modal">
+            <div className="gameover-result" id="gameover-title">{resultLabel(game, coach.name, resigned)}</div>
+            <p className="gameover-status">{resigned ? `You resigned. ${coach.name} wins.` : getStatus(game, coach.name)}</p>
+            <div className="gameover-actions">
+              <button
+                className="primary-action"
+                onClick={() => { setShowGameOverModal(false); setShowAnalysis(true); }}
+              >
+                View Analysis
+              </button>
+              <button
+                className="ghost-action"
+                onClick={() => { setShowGameOverModal(false); resetGame(); }}
+              >
+                New Game
+              </button>
+            </div>
+          </div>
+        </div>,
+        document.body,
+      )}
+
+      {showResignConfirm && createPortal(
+        <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="resign-title">
+          <div className="gameover-modal">
+            <div className="gameover-result" id="resign-title">Resign?</div>
+            <p className="gameover-status">{coach.name} will be credited with the win.</p>
+            <div className="gameover-actions">
+              <button
+                className="ghost-action"
+                onClick={() => setShowResignConfirm(false)}
+              >
+                Keep Playing
+              </button>
+              <button
+                className="primary-action danger-action"
+                onClick={() => { setShowResignConfirm(false); setResigned(true); }}
+              >
+                Resign
+              </button>
+            </div>
+          </div>
+        </div>,
+        document.body,
+      )}
 
       {chatOpen && (
         <section className="chat-drawer" aria-label={`Chat with ${coach.name}`}>
@@ -1411,7 +1750,8 @@ function getStatus(game: Chess, coachName: string) {
   return game.turn() === 'w' ? 'White to move. Choose a piece.' : `${coachName} is considering a reply.`;
 }
 
-function resultLabel(game: Chess, coachName: string) {
+function resultLabel(game: Chess, coachName: string, resigned = false) {
+  if (resigned) return `${coachName} won by resignation`;
   if (!game.isGameOver()) return 'In progress';
   if (game.isCheckmate()) return game.turn() === 'w' ? `${coachName} won by checkmate` : 'You won by checkmate';
   if (game.isStalemate()) return 'Draw by stalemate';
@@ -1420,6 +1760,82 @@ function resultLabel(game: Chess, coachName: string) {
 
 function normalizeSan(san: string) {
   return san.replace(/[+#?!]/g, '');
+}
+
+// Reasons that describe a persistent positional state (not a one-off tactical event).
+// Once spoken about, we hold off repeating them for a few moves.
+const PERSISTENT_POSITIONAL_REASONS = new Set([
+  'uncastled-open-center',
+  'too-many-pawn-moves',
+  'repeated-piece-move',
+  'opened-king-file',
+  'king-pawn-shield',
+]);
+const PERSISTENT_REPEAT_WINDOW = 5;
+
+function recentlySpokenTopics(spoken: Map<string, number>, currentMoveNo: number): string[] {
+  const out: string[] = [];
+  for (const [reason, moveNo] of spoken) {
+    if (PERSISTENT_POSITIONAL_REASONS.has(reason) && currentMoveNo - moveNo < PERSISTENT_REPEAT_WINDOW) {
+      out.push(reason);
+    }
+  }
+  return out;
+}
+
+function applyRepeatSuppression(
+  speech: { shouldSpeak: boolean; reasons: string[] },
+  spoken: Map<string, number>,
+  currentMoveNo: number,
+): { shouldSpeak: boolean; suppressed: boolean; suppressedReasons: string[] } {
+  if (!speech.shouldSpeak) return { shouldSpeak: false, suppressed: false, suppressedReasons: [] };
+  const fresh = speech.reasons.filter((r) => {
+    if (!PERSISTENT_POSITIONAL_REASONS.has(r)) return true;
+    const last = spoken.get(r);
+    return last === undefined || currentMoveNo - last >= PERSISTENT_REPEAT_WINDOW;
+  });
+  // If every reason that fired is a recently-spoken persistent one, suppress.
+  if (fresh.length === 0) {
+    return { shouldSpeak: false, suppressed: true, suppressedReasons: speech.reasons };
+  }
+  return { shouldSpeak: true, suppressed: false, suppressedReasons: [] };
+}
+
+type MovePairEntry = { san: string; historyIdx: number; color: 'w' | 'b' };
+
+function buildMovePairs(history: MoveRecord[]): [MovePairEntry | null, MovePairEntry | null][] {
+  const pairs: [MovePairEntry | null, MovePairEntry | null][] = [];
+  for (let i = 0; i < history.length; i += 2) {
+    const w = history[i] ? { san: history[i].san, historyIdx: i, color: history[i].color } : null;
+    const b = history[i + 1] ? { san: history[i + 1].san, historyIdx: i + 1, color: history[i + 1].color } : null;
+    pairs.push([w, b]);
+  }
+  return pairs;
+}
+
+function buildErrorMap(keyMoments: KeyMoment[]): Map<number, string> {
+  const map = new Map<number, string>();
+  for (const km of keyMoments) {
+    map.set(km.moveNumber, km.label);
+  }
+  return map;
+}
+
+function getChipClass(historyIdx: number, history: MoveRecord[], errorMap: Map<number, string>): string {
+  const move = history[historyIdx];
+  if (!move || move.color !== 'w') return '';
+  const moveNumber = Math.ceil((historyIdx + 1) / 2);
+  const label = errorMap.get(moveNumber);
+  if (!label) return 'good';
+  return label.toLowerCase();
+}
+
+function describeAccuracy(acc: number): string {
+  if (acc >= 90) return 'Near-perfect — computer-level precision';
+  if (acc >= 80) return 'Very strong play this game';
+  if (acc >= 70) return 'Solid play with a few lapses';
+  if (acc >= 60) return 'Decent — room to sharpen your tactics';
+  return 'Plenty of room to grow — keep practicing!';
 }
 
 export default App;

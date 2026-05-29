@@ -39,12 +39,27 @@ export default function CoachCard({ coach, status, lastLine, onReady, onAddToDat
   useGLTF.preload(idleUrl);
   debugLog('CoachCard', `Rendering coach=${coach.id} model=${coach.modelFile}`);
 
+  const MAX_BUBBLE_HEIGHT = 210;
+
   useEffect(() => {
-    const el = lineRef.current;
     const wrap = wrapRef.current;
-    if (!el || !wrap) return;
-    const scrollable = el.scrollHeight > el.clientHeight + 2;
-    wrap.classList.toggle('is-scrollable', scrollable);
+    if (!wrap) return;
+
+    if (!lastLine) {
+      wrap.style.height = '0px';
+      wrap.classList.remove('is-clipped');
+      return;
+    }
+
+    const el = lineRef.current;
+    if (!el) return;
+
+    requestAnimationFrame(() => {
+      const natural = el.offsetHeight;
+      const capped = Math.min(natural, MAX_BUBBLE_HEIGHT);
+      wrap.style.height = `${capped}px`;
+      wrap.classList.toggle('is-clipped', natural > MAX_BUBBLE_HEIGHT);
+    });
   }, [lastLine]);
 
   return (
@@ -102,11 +117,9 @@ export default function CoachCard({ coach, status, lastLine, onReady, onAddToDat
           </button>
         )}
       </div>
-      {lastLine && (
-        <div ref={wrapRef} className="coach-line-wrap">
-          <p ref={lineRef} className="coach-line">{lastLine}</p>
-        </div>
-      )}
+      <div ref={wrapRef} className="coach-line-wrap">
+        {lastLine && <p ref={lineRef} className="coach-line">{lastLine}</p>}
+      </div>
     </section>
   );
 }
