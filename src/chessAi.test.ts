@@ -164,4 +164,121 @@ describe('coach prompting helpers', () => {
     expect(info).toContain('my queen');
     expect(info).toContain("capturing the student's pawn");
   });
+
+  it('does not describe a student hint move as the coach planned move', () => {
+    const game = new Chess();
+    const candidate = new Chess().move('e4');
+    expect(candidate).toBeTruthy();
+
+    const info = buildDynamicCoachInfo(
+      game,
+      candidate,
+      null,
+      getCoach('leila'),
+      getDifficulty('intermediate'),
+    );
+
+    expect(info).toContain('Candidate best move for the student as White');
+    expect(info).toContain("the student's pawn from E 2 to E 4");
+    expect(info).not.toContain('My planned next move as Black coach');
+  });
+
+  it('names whose piece can be captured by the side to move', () => {
+    const game = new Chess();
+    game.move('e4');
+    const coachPawn = game.move('d5');
+    expect(coachPawn).toBeTruthy();
+
+    const studentInfo = buildDynamicCoachInfo(
+      game,
+      null,
+      coachPawn,
+      getCoach('leila'),
+      getDifficulty('intermediate'),
+    );
+
+    expect(studentInfo).toContain('the student (playing White) (side to move)');
+    expect(studentInfo).toContain('my pawn on D 5');
+
+    const studentCapture = game.move('exd5');
+    expect(studentCapture).toBeTruthy();
+    const coachInfo = buildDynamicCoachInfo(
+      game,
+      null,
+      studentCapture,
+      getCoach('leila'),
+      getDifficulty('intermediate'),
+    );
+
+    expect(coachInfo).toContain('I (the coach playing Black) (side to move)');
+    expect(coachInfo).toContain("the student's pawn on D 5");
+  });
+
+  it('states that the coach is in check after the student gives check', () => {
+    const game = new Chess();
+    game.move('d4');
+    game.move('d5');
+    game.move('e3');
+    game.move('Nf6');
+    game.move('f4');
+    game.move('e6');
+    game.move('a3');
+    game.move('Be7');
+    const studentCheck = game.move('Bb5+');
+    expect(studentCheck).toBeTruthy();
+
+    const info = buildDynamicCoachInfo(
+      game,
+      null,
+      studentCheck,
+      getCoach('leila'),
+      getDifficulty('intermediate'),
+      [
+        { san: 'd4', from: 'd2', to: 'd4', piece: 'p', by: 'You' },
+        { san: 'd5', from: 'd7', to: 'd5', piece: 'p', by: 'Leila' },
+        { san: 'e3', from: 'e2', to: 'e3', piece: 'p', by: 'You' },
+        { san: 'Nf6', from: 'g8', to: 'f6', piece: 'n', by: 'Leila' },
+        { san: 'f4', from: 'f2', to: 'f4', piece: 'p', by: 'You' },
+        { san: 'e6', from: 'e7', to: 'e6', piece: 'p', by: 'Leila' },
+        { san: 'a3', from: 'a2', to: 'a3', piece: 'p', by: 'You' },
+        { san: 'Be7', from: 'f8', to: 'e7', piece: 'b', by: 'Leila' },
+        { san: studentCheck.san, from: studentCheck.from, to: studentCheck.to, piece: studentCheck.piece, by: 'You' },
+      ],
+    );
+
+    expect(info).toContain('Current check ownership: I (coach playing Black) am in check');
+    expect(info).toContain('The student gave check to my king');
+    expect(info).toContain('giving check to my king');
+    expect(info).not.toContain('You (the student playing White) are in check');
+    expect(info).not.toContain('I gave check to your king');
+  });
+
+  it('states that the student is in check after the coach gives check', () => {
+    const game = new Chess();
+    game.move('f3');
+    game.move('e5');
+    game.move('g4');
+    const coachMate = game.move('Qh4#');
+    expect(coachMate).toBeTruthy();
+
+    const info = buildDynamicCoachInfo(
+      game,
+      null,
+      coachMate,
+      getCoach('leila'),
+      getDifficulty('intermediate'),
+      [
+        { san: 'f3', from: 'f2', to: 'f3', piece: 'p', by: 'You' },
+        { san: 'e5', from: 'e7', to: 'e5', piece: 'p', by: 'Leila' },
+        { san: 'g4', from: 'g2', to: 'g4', piece: 'p', by: 'You' },
+        { san: coachMate.san, from: coachMate.from, to: coachMate.to, piece: coachMate.piece, by: 'Leila' },
+      ],
+    );
+
+    expect(info).toContain('Current check ownership: You (the student playing White) are in check');
+    expect(info).toContain('I gave checkmate to your king');
+    expect(info).toContain('giving check to your king');
+    expect(info).not.toContain('Current check ownership: I (coach playing Black) am in check');
+    expect(info).not.toContain('The student gave check to my king');
+  });
 });

@@ -2124,21 +2124,69 @@ h2 {
 
 .move-detail-layout {
   display: grid;
-  grid-template-columns: minmax(0, 260px) minmax(0, 1fr);
+  grid-template-columns: 196px minmax(0, 1fr);
   gap: 1.25rem;
   align-items: start;
   margin-top: 0.75rem;
 }
 
 .mini-board-wrap {
-  width: 100%;
+  width: 196px;
 }
 
-.mini-board-wrap .board-wrap {
-  --board-size: min(260px, 100%);
-  pointer-events: none;
-  border-radius: 8px;
+.mini-board-viewport {
+  width: 178px;
+  height: 178px;
   overflow: hidden;
+  border: 1px solid rgba(244, 234, 216, 0.16);
+  border-radius: 14px;
+  background: #31251a;
+  box-shadow: inset 0 0 0 1px rgba(25, 23, 19, 0.42);
+}
+
+.mini-board-viewport .board-wrap.mini-board-focus {
+  --board-size: 300px;
+  grid-template-columns: var(--board-size);
+  grid-template-rows: var(--board-size);
+  width: var(--board-size);
+  padding: 0;
+  pointer-events: none;
+  border-radius: 0;
+  transform: translate(var(--focus-x, 0), var(--focus-y, 0));
+  transition: transform 180ms ease;
+}
+
+.mini-board-viewport .rank-labels,
+.mini-board-viewport .file-labels {
+  display: none;
+}
+
+.mini-board-viewport .chess-board {
+  border-width: 6px;
+  border-radius: 0;
+}
+
+.mini-board-viewport .piece {
+  font-size: 2.1rem;
+  text-shadow: 0 2px 0 rgba(25, 23, 19, 0.28), 0 7px 12px rgba(0, 0, 0, 0.28);
+}
+
+.mini-board-viewport .white-piece {
+  text-shadow: 0 2px 0 #a97d47, 0 7px 12px rgba(0, 0, 0, 0.28);
+}
+
+.mini-board-viewport .black-piece {
+  text-shadow: 0 1px 0 rgba(255, 235, 185, 0.24), 0 7px 12px rgba(0, 0, 0, 0.28);
+}
+
+@media (max-width: 760px) {
+  .move-detail-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .mini-board-wrap {
+    width: 100%;
+  }
 }
 
 .move-detail-info {

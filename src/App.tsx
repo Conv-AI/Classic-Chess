@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { Chess, type Move, type Square } from 'chess.js';
 import { ChevronsLeft, ChevronsRight, ChevronLeft, ChevronRight, Clipboard } from 'lucide-react';
@@ -644,18 +644,26 @@ function ChessGame({
     const moveNumber = Math.ceil((moveIdx + 1) / 2);
     const km = analysis?.keyMoments.find((m) => m.moveNumber === moveNumber && move.color === 'w');
     const quality = km ? km.label.toLowerCase() : (move.color === 'w' ? 'solid' : 'opponent');
+    const studentMove = move.color === 'w';
+    const moveOwner = studentMove
+      ? 'you, the student playing White'
+      : `I, ${coach.name}, playing Black`;
 
     const dynamicCtx = [
       `FEN before the move: ${move.fenBefore}`,
-      `Move ${moveNumber}: ${move.by} played ${move.san}.`,
+      `Move ${moveNumber}: ${moveOwner} played ${move.san}.`,
+      studentMove
+        ? 'Pronoun rule for this review: say "you/your" for the side that made this move.'
+        : 'Pronoun rule for this review: say "I/my" for the side that made this move; do not call it the student\'s move.',
       quality !== 'opponent' && quality !== 'solid' ? `This was classified as a ${quality}.` : '',
       km?.bestMove ? `Stockfish preferred ${km.bestMove} in this position.` : '',
       km?.description ?? '',
     ].filter(Boolean).join(' ');
 
+    const promptSubject = studentMove ? 'your move' : 'my move';
     const prompt = quality === 'solid' || quality === 'opponent'
-      ? `In 2 sentences, explain what makes ${move.san} on move ${moveNumber} a reasonable choice and what chess principle it follows.`
-      : `In 2–3 sentences, explain concretely why ${move.san} on move ${moveNumber} was a ${quality}${km?.bestMove ? ` and what makes ${km.bestMove} stronger` : ''}.`;
+      ? `In 2 sentences, explain what makes ${promptSubject} ${move.san} on move ${moveNumber} a reasonable choice and what chess principle it follows.`
+      : `In 2-3 sentences, explain concretely why ${promptSubject} ${move.san} on move ${moveNumber} was a ${quality}${km?.bestMove ? ` and what makes ${km.bestMove} stronger` : ''}.`;
 
     const spoken = await chessConvai.speakCoachMessage(coach, prompt, dynamicCtx);
     if (spoken) {
@@ -771,10 +779,14 @@ function ChessGame({
                   <p className="eyebrow">Move {moveNumber} — {history[selectedMoveIdx]?.by}: {history[selectedMoveIdx]?.san}</p>
                   <div className="move-detail-layout">
                     <div className="mini-board-wrap">
-                      <ChessBoard
-                        game={selectedBoardGame}
-                        lastMove={move ? { from: move.from, to: move.to } : null}
-                      />
+                      <div className="mini-board-viewport">
+                        <ChessBoard
+                          className="mini-board-focus"
+                          game={selectedBoardGame}
+                          lastMove={move ? { from: move.from, to: move.to } : null}
+                          style={move ? miniBoardFocusStyle(move) : undefined}
+                        />
+                      </div>
                     </div>
                     <div className="move-detail-info">
                       {km ? (
@@ -1033,6 +1045,8 @@ export function ChessBoard({
   lastMove,
   onSquareClick,
   orientation = 'w',
+  className,
+  style,
 }: {
   game: Chess;
   selected?: Square | null;
@@ -1040,13 +1054,15 @@ export function ChessBoard({
   lastMove?: Pick<MoveSnapshot, 'from' | 'to'> | null;
   onSquareClick?: (square: Square) => void;
   orientation?: 'w' | 'b';
+  className?: string;
+  style?: CSSProperties;
 }) {
   const rankLabels = orientation === 'w'
     ? [8, 7, 6, 5, 4, 3, 2, 1]
     : [1, 2, 3, 4, 5, 6, 7, 8];
   const fileLabels = orientation === 'w' ? FILES : [...FILES].slice().reverse();
   return (
-    <div className="board-wrap">
+    <div className={`board-wrap ${className ?? ''}`.trim()} style={style}>
       <div className="rank-labels">
         {rankLabels.map((rank) => <span key={rank}>{rank}</span>)}
       </div>
@@ -1085,6 +1101,30 @@ export function ChessBoard({
       </div>
     </div>
   );
+}
+
+function miniBoardFocusStyle(move: Pick<MoveRecord, 'from' | 'to'>): CSSProperties {
+  const viewport = 178;
+  const board = 300;
+  const from = squareCenter(move.from);
+  const to = squareCenter(move.to);
+  const centerX = (from.x + to.x) / 2;
+  const centerY = (from.y + to.y) / 2;
+  const x = Math.min(0, Math.max(viewport - board, viewport / 2 - centerX * board));
+  const y = Math.min(0, Math.max(viewport - board, viewport / 2 - centerY * board));
+  return {
+    '--focus-x': `${x}px`,
+    '--focus-y': `${y}px`,
+  } as CSSProperties;
+}
+
+function squareCenter(square: string) {
+  const file = FILES.indexOf(square[0]);
+  const rank = Number(square[1]);
+  return {
+    x: (file + 0.5) / 8,
+    y: (8 - rank + 0.5) / 8,
+  };
 }
 
 const PUZZLE_GROUP_SIZE = 5;

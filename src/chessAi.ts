@@ -174,8 +174,8 @@ export function analyzeCoachMoveContext(
   if (Math.abs(materialDelta) >= PIECE_VALUES.p) {
     facts.push(`Material swing from the last move for ${ownership.moverPhrase}: ${materialDelta > 0 ? '+' : ''}${materialDelta} centipawns.`);
   }
-  if (lastMove.san.includes('+') || lastMove.san.includes('#')) facts.push('The last move gave check or checkmate.');
-  if (lastMove.promotion) facts.push(`The last move promoted a pawn to a ${pieceName(lastMove.promotion)}.`);
+  if (lastMove.san.includes('+') || lastMove.san.includes('#')) facts.push(describeCheckFromLastMove(lastMove));
+  if (lastMove.promotion) facts.push(`${ownership.moverPhrase} promoted ${ownership.moverPossessive} pawn to a ${pieceName(lastMove.promotion)}.`);
   if (forcing.checks || forcing.captures || forcing.promotions) {
     facts.push(`${sideToMoveOwnership.moverPhrase} (side to move) has ${forcing.checks} checking moves, ${forcing.captures} captures, and ${forcing.promotions} promotions available.`);
   }
@@ -186,7 +186,7 @@ export function analyzeCoachMoveContext(
         : item.attackerCount > item.defenderCount
           ? `defended ${item.defenderCount}× but attacked ${item.attackerCount}× — winning exchange may exist (NOT hanging)`
           : `defended ${item.defenderCount}× — capturing it is an exchange, not a free win (DO NOT call it "undefended" or "hanging")`;
-      return `${pieceName(item.piece)} on ${formatSquare(item.square)} [${status}]`;
+      return `${item.ownerPossessive} ${pieceName(item.piece)} on ${formatSquare(item.square)} [${status}]`;
     });
     facts.push(`Pieces ${sideToMoveOwnership.moverPhrase} can target with a capture move: ${items.join('; ')}.`);
   }
@@ -367,6 +367,7 @@ function capturablePiecesForSideToMove(game: Chess) {
     by: string;
     defenderCount: number;
     attackerCount: number;
+    ownerPossessive: string;
   }> = [];
   for (const move of game.moves({ verbose: true })) {
     if (!move.captured) continue;
@@ -382,7 +383,14 @@ function capturablePiecesForSideToMove(game: Chess) {
       defenderCount = 0;
       attackerCount = 0;
     }
-    result.push({ square, piece: move.captured as string, by: move.san, defenderCount, attackerCount });
+    result.push({
+      square,
+      piece: move.captured as string,
+      by: move.san,
+      defenderCount,
+      attackerCount,
+      ownerPossessive: moveOwnership(ownerColor).moverPossessive,
+    });
   }
   return result.sort((a, b) => (PIECE_VALUES[b.piece] ?? 0) - (PIECE_VALUES[a.piece] ?? 0));
 }
@@ -399,6 +407,7 @@ function pawnMoveInfo(game: Chess, lastMove: Move, moveHistory: MoveHistoryEntry
     return { facts, aggressivePush: false, tooManyPawnMoves: false, directShieldMoved: false, openedKingFile: false };
   }
 
+  const ownership = moveOwnership(lastMove.color);
   const fromFile = lastMove.from[0];
   const toRank = Number(lastMove.to[1]);
   const fromRank = Number(lastMove.from[1]);
@@ -410,7 +419,7 @@ function pawnMoveInfo(game: Chess, lastMove: Move, moveHistory: MoveHistoryEntry
   // file is now empty — flank pawns vacating their start square aren't an emergency.
   const openedKingFile = directShieldMoved && !fileHasPawn(game, fromFile, lastMove.color);
   const pawnMovesBySide = moveHistory.filter((move) => move.by === 'You' && move.piece === 'p').length;
-  const tooManyPawnMoves = moveNumber(game) <= 10 && pawnMovesBySide >= 5;
+  const tooManyPawnMoves = whiteMove && moveNumber(game) <= 10 && pawnMovesBySide >= 5;
   // Restrict "aggressive pawn push" to kingside-area flank pawns (f/g/h). Queenside flank
   // (a/b) pushes are usually positional, not a king-safety lecture in this codebase.
   const kingsideFlank = ['f', 'g', 'h'].includes(fromFile);
@@ -422,18 +431,18 @@ function pawnMoveInfo(game: Chess, lastMove: Move, moveHistory: MoveHistoryEntry
   const directCoverSquare = whiteMove ? 'G 2' : 'G 7';
 
   if (shieldType === 'direct') {
-    facts.push(`The ${fromFile.toUpperCase()} pawn that directly covers the king's castling square (${whiteMove ? 'G 1' : 'G 8'} after O-O) was advanced from ${formatSquare(lastMove.from)} to ${formatSquare(lastMove.to)} — this is the most critical king-shield pawn.`);
+    facts.push(`${ownership.moverPhrase} advanced ${ownership.moverPossessive} ${fromFile.toUpperCase()} pawn from ${formatSquare(lastMove.from)} to ${formatSquare(lastMove.to)}. That pawn directly covers ${ownership.moverPossessive} king after kingside castling (${whiteMove ? 'G 1' : 'G 8'}), so do not swap whose king shield changed.`);
   } else if (shieldType === 'flank') {
-    facts.push(`A flank pawn adjacent to the kingside castle position was advanced from ${formatSquare(lastMove.from)} to ${formatSquare(lastMove.to)}. The direct king-cover pawn at ${directCoverSquare} is still in place — do not call this "the pawn that shields the king".`);
+    facts.push(`${ownership.moverPhrase} advanced ${ownership.moverPossessive} flank pawn from ${formatSquare(lastMove.from)} to ${formatSquare(lastMove.to)}. The direct king-cover pawn at ${directCoverSquare} is still in place - do not call this "the pawn that shields the king".`);
   } else if (aggressivePush) {
-    facts.push(`The last move advanced a kingside-area pawn (${fromFile.toUpperCase()} file) two squares forward to ${formatSquare(lastMove.to)}.`);
+    facts.push(`${ownership.moverPhrase} advanced ${ownership.moverPossessive} kingside-area pawn (${fromFile.toUpperCase()} file) two squares forward to ${formatSquare(lastMove.to)}.`);
   }
 
-  if (openedKingFile) facts.push(`The ${fromFile.toUpperCase()} file no longer has that side's pawn on it, leaving the file open.`);
+  if (openedKingFile) facts.push(`The ${fromFile.toUpperCase()} file no longer has ${ownership.moverPossessive} pawn on it, leaving the file open near ${ownership.moverPossessive} king.`);
   if (advancement >= 2 && shieldType === null && !aggressivePush) {
-    facts.push(`The pawn advanced ${advancement} ranks in one move.`);
+    facts.push(`${ownership.moverPhrase} advanced ${ownership.moverPossessive} pawn ${advancement} ranks in one move.`);
   }
-  if (tooManyPawnMoves) facts.push(`Student has made ${pawnMovesBySide} pawn moves by move ${moveNumber(game)}.`);
+  if (tooManyPawnMoves && lastMove.color === 'w') facts.push(`The student has made ${pawnMovesBySide} pawn moves by move ${moveNumber(game)}.`);
 
   return { facts, aggressivePush, tooManyPawnMoves, directShieldMoved, openedKingFile };
 }
@@ -443,10 +452,11 @@ function kingSafetyInfo(game: Chess, lastMove: Move) {
   const color = lastMove.color;
   const rights = game.fen().split(' ')[2] ?? '-';
   const white = color === 'w';
+  const ownership = moveOwnership(color);
   const stillCanCastle = white ? /K|Q/.test(rights) : /k|q/.test(rights);
   const centerOpen = !fileHasPawn(game, 'd', 'w') || !fileHasPawn(game, 'e', 'w') || !fileHasPawn(game, 'd', 'b') || !fileHasPawn(game, 'e', 'b');
   const unCastledWithCenterOpen = stillCanCastle && centerOpen && moveNumber(game) >= 5;
-  if (unCastledWithCenterOpen) facts.push(`${white ? 'White' : 'Black'} king is still uncastled while central files or pawns have opened.`);
+  if (unCastledWithCenterOpen) facts.push(`${ownership.moverPhrase} still has ${ownership.moverPossessive} king uncastled while central files or pawns have opened.`);
   return { facts, unCastledWithCenterOpen };
 }
 
@@ -517,14 +527,13 @@ export function buildDynamicCoachInfo(
         : 'normal play';
   const legalMoveCount = game.moves().length;
   const material = materialSummary(game);
+  const checkOwnership = describeCurrentCheckOwnership(game);
   const fenInfo = `Current board FEN: ${game.fen()}. Use this only to understand the board; do not say "FEN" aloud.`;
   const recentHistory = moveHistory.length
     ? `Recent move history, oldest to newest: ${moveHistory.slice(-10).map(formatHistoryMove).join('; ')}.`
     : 'Recent move history: none.';
   const lastMoveInfo = lastMove ? describeLastMove(lastMove) : 'No move has been played yet.';
-  const moveHint = plannedMove
-    ? `My planned next move as Black coach: ${pieceName(plannedMove.piece)} from ${formatSquare(plannedMove.from)} to ${formatSquare(plannedMove.to)}${plannedMove.captured ? `, capturing the student's ${pieceName(plannedMove.captured)}` : ''}${plannedMove.san.includes('+') ? ', giving check' : ''}${plannedMove.san.includes('#') ? ', giving checkmate' : ''}.`
-    : '';
+  const moveHint = plannedMove ? describePlannedMove(plannedMove) : '';
   const tacticalInfo = tacticalSummary(game, lastMove);
   const context = analyzeCoachMoveContext(game, plannedMove, lastMove, difficulty, moveHistory);
   const positionFacts = context.facts.length
@@ -540,6 +549,7 @@ export function buildDynamicCoachInfo(
     levelInfo,
     turn,
     `Position status: ${status}.`,
+    checkOwnership,
     fenInfo,
     recentHistory,
     `Legal moves available: ${legalMoveCount}.`,
@@ -549,7 +559,7 @@ export function buildDynamicCoachInfo(
     moveHint,
     positionFacts,
     recentTopicsNotice,
-    'Speech rule: speak in first person as the coach and address the student as "you". If the position is routine or there is no useful chess lesson, stay silent. Do not blandly describe what the student just moved. If I have a check, winning capture, or decisive tactic available (as shown in my planned move), I may reference that I see a strong response using "I can" language — but do not announce the exact move. Speak only for a real teaching moment: a blunder, tactic, missed threat, principle, weak square, pawn structure, development, king safety, or endgame idea. Never write raw chess notation - capitalize file letters and separate letter from digit: "the A file", "E 4", "knight to F 3", "bishop takes E 5". TTS needs the capital letter so it reads it as the letter name, not the article.',
+    'Speech rule: speak in first person as the coach and address the student as "you". If the position is routine or there is no useful chess lesson, stay silent. Do not blandly describe what the student just moved. If I have a check, winning capture, or decisive tactic available (as shown in my planned move), I may reference that I see a strong response using "I can" language - but do not announce the exact move. If the current check ownership says I am in check, I must never tell the student "you are in check"; if it says the student is in check, I must never say I am in check. Speak only for a real teaching moment: a blunder, tactic, missed threat, principle, weak square, pawn structure, development, king safety, or endgame idea. Never write raw chess notation - capitalize file letters and separate letter from digit: "the A file", "E 4", "knight to F 3", "bishop takes E 5". TTS needs the capital letter so it reads it as the letter name, not the article.',
   ].filter(Boolean).join(' ').trim();
 }
 
@@ -559,12 +569,15 @@ function buildAttributionCheatsheet(
   const recent = moveHistory.slice(-12);
   const myCaptures: string[] = [];
   const studentCaptures: string[] = [];
+  const myChecks: string[] = [];
+  const studentChecks: string[] = [];
   for (const m of recent) {
-    if (!m.captured) continue;
     if (m.by === 'You') {
-      studentCaptures.push(`the student's ${pieceName(m.piece)} took my ${pieceName(m.captured)} on ${formatSquare(m.to)} (${m.san})`);
+      if (m.captured) studentCaptures.push(`the student's ${pieceName(m.piece)} took my ${pieceName(m.captured)} on ${formatSquare(m.to)} (${m.san})`);
+      if (m.san.includes('+') || m.san.includes('#')) studentChecks.push(`the student's ${pieceName(m.piece)} gave check to my king on ${formatSquare(m.to)} (${m.san})`);
     } else {
-      myCaptures.push(`my ${pieceName(m.piece)} took the student's ${pieceName(m.captured)} on ${formatSquare(m.to)} (${m.san})`);
+      if (m.captured) myCaptures.push(`my ${pieceName(m.piece)} took the student's ${pieceName(m.captured)} on ${formatSquare(m.to)} (${m.san})`);
+      if (m.san.includes('+') || m.san.includes('#')) myChecks.push(`my ${pieceName(m.piece)} gave check to the student's king on ${formatSquare(m.to)} (${m.san})`);
     }
   }
   const lines = [
@@ -572,7 +585,9 @@ function buildAttributionCheatsheet(
     'I am the coach playing BLACK. The student plays WHITE. In FEN, lowercase letters are MY pieces, uppercase are the STUDENT\'s.',
     `Captures I (the coach) have made recently: ${myCaptures.length ? myCaptures.join('; ') : 'none.'}`,
     `Captures the STUDENT has made recently: ${studentCaptures.length ? studentCaptures.join('; ') : 'none.'}`,
-    'Never invert these. If I captured the student\'s queen, that capture is MINE — I must not say "your knight took my queen" or any phrasing that swaps owners.',
+    `Checks I (the coach) have given recently: ${myChecks.length ? myChecks.join('; ') : 'none.'}`,
+    `Checks the STUDENT has given recently: ${studentChecks.length ? studentChecks.join('; ') : 'none.'}`,
+    'Never invert these. If I captured the student\'s queen, that capture is MINE - I must not say "your knight took my queen" or any phrasing that swaps owners. If the student gave check to my king, I am in check - I must not say "you are in check".',
   ];
   return lines.join(' ');
 }
@@ -636,8 +651,21 @@ export function buildCoachInstruction(coach: CoachConfig, difficulty: Difficulty
 function materialSummary(game: Chess) {
   const score = materialScore(game);
   if (Math.abs(score) < 100) return 'Material is roughly equal.';
-  const leader = score > 0 ? 'White/player' : 'Black/coach';
+  const leader = score > 0 ? 'the student (White)' : 'me, the coach (Black)';
   return `${leader} is ahead by about ${Math.abs(score)} centipawns of material.`;
+}
+
+function describePlannedMove(move: Move) {
+  const ownership = moveOwnership(move.color);
+  const prefix = move.color === 'b'
+    ? 'My planned next move as Black coach'
+    : 'Candidate best move for the student as White';
+  const capture = move.captured
+    ? `, capturing ${ownership.opponentPossessive} ${pieceName(move.captured)}`
+    : '';
+  const check = move.san.includes('+') ? (move.color === 'b' ? ', giving check to your king' : ', giving check to my king') : '';
+  const mate = move.san.includes('#') ? (move.color === 'b' ? ', giving checkmate to your king' : ', giving checkmate to my king') : '';
+  return `${prefix}: ${ownership.moverPossessive} ${pieceName(move.piece)} from ${formatSquare(move.from)} to ${formatSquare(move.to)}${capture}${check}${mate}.`;
 }
 
 function describeLastMove(move: Move) {
@@ -646,8 +674,8 @@ function describeLastMove(move: Move) {
   const capture = move.captured
     ? `, capturing ${ownership.opponentPossessive} ${pieceName(move.captured)}`
     : '';
-  const check = move.san.includes('+') ? ' - this gave check' : '';
-  const mate = move.san.includes('#') ? ' - this was checkmate' : '';
+  const check = move.san.includes('+') ? ` - ${describeCheckFromLastMove(move)}` : '';
+  const mate = move.san.includes('#') ? ` - ${describeCheckFromLastMove(move)}` : '';
   return `Last move facts for board context only: ${ownership.moverPhrase} just moved ${ownership.moverPossessive} ${piece} from ${formatSquare(move.from)} to ${formatSquare(move.to)}${capture}${check}${mate}.`;
 }
 
@@ -660,7 +688,10 @@ function formatHistoryMove(move: { san: string; from: string; to: string; piece:
   const capture = move.captured
     ? `, capturing ${opponentPossessive} ${pieceName(move.captured)}`
     : '';
-  return `${moverPhrase}: ${moverPossessive} ${pieceName(move.piece)} ${formatSquare(move.from)}-${formatSquare(move.to)}${capture} (${move.san})`;
+  const check = move.san.includes('+') || move.san.includes('#')
+    ? (isCoachMove ? ', giving check to your king' : ', giving check to my king')
+    : '';
+  return `${moverPhrase}: ${moverPossessive} ${pieceName(move.piece)} ${formatSquare(move.from)}-${formatSquare(move.to)}${capture}${check} (${move.san})`;
 }
 
 type MoveOwnership = {
@@ -691,6 +722,25 @@ function moveOwnership(color: 'w' | 'b'): MoveOwnership {
     return { ...coachSide, opponent: studentSide };
   }
   return { ...studentSide, opponent: coachSide };
+}
+
+function describeCheckFromLastMove(move: Pick<Move, 'color' | 'san'>) {
+  if (move.color === 'w') {
+    return move.san.includes('#')
+      ? 'The student gave checkmate to my king. I (coach Black) am checkmated; do not say the student is in check.'
+      : 'The student gave check to my king. I (coach Black) am in check; do not say the student is in check.';
+  }
+  return move.san.includes('#')
+    ? 'I gave checkmate to your king. You (student White) are checkmated; do not say I am in check.'
+    : 'I gave check to your king. You (student White) are in check; do not say I am in check.';
+}
+
+function describeCurrentCheckOwnership(game: Chess) {
+  if (!game.isCheck() && !game.isCheckmate()) return '';
+  if (game.turn() === 'b') {
+    return 'Current check ownership: I (coach playing Black) am in check. The student gave check to my king, so I must respond to check. I must not say "you are in check" because "you" means the student.';
+  }
+  return 'Current check ownership: You (the student playing White) are in check. I gave check to your king, so you must respond to check. I must not say I am in check.';
 }
 
 function tacticalSummary(game: Chess, lastMove?: Move | null) {
