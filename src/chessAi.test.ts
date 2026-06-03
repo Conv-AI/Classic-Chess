@@ -214,6 +214,92 @@ describe('coach prompting helpers', () => {
     expect(coachInfo).toContain("the student's pawn on D 5");
   });
 
+  it('attributes a capture to the coach (not the student) when it is the coach to move', () => {
+    // Reproduces the logged D4 bug: the student captures into a square where the piece is now
+    // hanging, and it is the coach (Black) to move. The coach must say "I can take", never
+    // "you can take it for free".
+    const game = new Chess();
+    game.move('e4');
+    game.move('e5');
+    game.move('Nf3');
+    game.move('Nc6');
+    const studentCapture = game.move('Nxe5'); // white knight lands on e5, now hanging, Black to move
+    expect(studentCapture).toBeTruthy();
+
+    const info = buildDynamicCoachInfo(
+      game,
+      null,
+      studentCapture,
+      getCoach('leila'),
+      getDifficulty('intermediate'),
+    );
+
+    expect(info).toContain('Pieces I (the coach playing Black) can target');
+    expect(info).toContain('Capture actor: every capture listed above is a move that I, the coach');
+    expect(info).toContain('can now be captured by me (the coach)');
+    // The model must not be handed any phrasing that lets it tell the student to make this capture.
+    expect(info).not.toContain('can now be captured by the student');
+  });
+
+  it('flags that the student has already castled and gates stale castling praise', () => {
+    // Reproduces the logged castling bug: the student castled several plies ago and the coach
+    // later praised castling as if it just happened.
+    const game = new Chess();
+    const history = [] as Array<{ san: string; from: string; to: string; piece: string; captured?: string; by: string }>;
+    const play = (san: string, by: string) => {
+      const m = game.move(san);
+      expect(m).toBeTruthy();
+      history.push({ san: m!.san, from: m!.from, to: m!.to, piece: m!.piece, captured: m!.captured, by });
+    };
+    play('e4', 'You');
+    play('e5', 'Leila');
+    play('Nf3', 'You');
+    play('Nc6', 'Leila');
+    play('Bc4', 'You');
+    play('Bc5', 'Leila');
+    play('O-O', 'You'); // student castles here
+    const lastMove = game.move('Nf6'); // coach replies; latest move is NOT castling
+    expect(lastMove).toBeTruthy();
+    history.push({ san: lastMove!.san, from: lastMove!.from, to: lastMove!.to, piece: lastMove!.piece, by: 'Leila' });
+
+    const info = buildDynamicCoachInfo(
+      game,
+      null,
+      lastMove,
+      getCoach('leila'),
+      getDifficulty('intermediate'),
+      history,
+    );
+
+    expect(info).toContain('LATEST MOVE ANCHOR');
+    expect(info).toContain('Latest move is castling: no');
+    expect(info).toContain('the student HAS ALREADY castled');
+    expect(info).toContain('do NOT say "you still have castling available"');
+  });
+
+  it('confirms castling praise is allowed on the move the student actually castles', () => {
+    const game = new Chess();
+    game.move('e4');
+    game.move('e5');
+    game.move('Nf3');
+    game.move('Nc6');
+    game.move('Bc4');
+    game.move('Bc5');
+    const castle = game.move('O-O');
+    expect(castle).toBeTruthy();
+
+    const info = buildDynamicCoachInfo(
+      game,
+      null,
+      castle,
+      getCoach('leila'),
+      getDifficulty('intermediate'),
+      [{ san: 'O-O', from: 'e1', to: 'g1', piece: 'k', by: 'You' }],
+    );
+
+    expect(info).toContain('Latest move is castling: YES');
+  });
+
   it('states that the coach is in check after the student gives check', () => {
     const game = new Chess();
     game.move('d4');

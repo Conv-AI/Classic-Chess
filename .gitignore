@@ -34,3 +34,4 @@ docs/AGENT_HANDOFF.md
 
 # Local dataset captured via `npm run dev:dataset`
 dataset.json
+Logs

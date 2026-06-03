@@ -189,13 +189,20 @@ export function analyzeCoachMoveContext(
       return `${item.ownerPossessive} ${pieceName(item.piece)} on ${formatSquare(item.square)} [${status}]`;
     });
     facts.push(`Pieces ${sideToMoveOwnership.moverPhrase} can target with a capture move: ${items.join('; ')}.`);
+    // Spell out who actually gets to make these captures so the model never inverts the actor.
+    // The side to move owns every capture in the list above.
+    const capturer = game.turn() === 'w' ? 'the student (it is the student\'s turn, so say "you can take ...")' : 'I, the coach (it is MY turn, so I must say "I can take ..." or "your piece is hanging — I can win it", NEVER "you can take it")';
+    facts.push(`Capture actor: every capture listed above is a move that ${capturer}.`);
   }
   if (movedPiece && attacksMovedPiece) {
     const movedItem = capturable.find((c) => c.square === lastMove.to);
     const movedStatus = movedItem && movedItem.defenderCount > 0
       ? ` (but it is defended ${movedItem.defenderCount}× — not hanging outright)`
       : ' (UNDEFENDED — it is hanging)';
-    facts.push(`${ownership.moverPossessive} ${pieceName(movedPiece.type)} that just moved to ${formatSquare(lastMove.to)} can now be captured${movedStatus}.`);
+    // Name the side that gets to capture it (the side to move) so the coach does not tell the
+    // student to capture a piece the student just moved there themselves.
+    const capturedBy = game.turn() === 'w' ? 'the student' : 'me (the coach)';
+    facts.push(`${ownership.moverPossessive} ${pieceName(movedPiece.type)} that just moved to ${formatSquare(lastMove.to)} can now be captured by ${capturedBy} on the next move${movedStatus}.`);
   }
   if (repeatedPiece) facts.push('The same non-pawn piece appears to have moved again recently.');
   facts.push(...pawnInfo.facts, ...kingInfo.facts);
@@ -530,9 +537,10 @@ export function buildDynamicCoachInfo(
   const checkOwnership = describeCurrentCheckOwnership(game);
   const fenInfo = `Current board FEN: ${game.fen()}. Use this only to understand the board; do not say "FEN" aloud.`;
   const recentHistory = moveHistory.length
-    ? `Recent move history, oldest to newest: ${moveHistory.slice(-10).map(formatHistoryMove).join('; ')}.`
+    ? `Recent move history (BACKGROUND ONLY — these are older moves, already played; use them to understand how the position arose, but NEVER comment on one of them as if it just happened. The move to react to is the LATEST MOVE ANCHOR below, not anything in this list), oldest to newest: ${moveHistory.slice(-10).map(formatHistoryMove).join('; ')}.`
     : 'Recent move history: none.';
   const lastMoveInfo = lastMove ? describeLastMove(lastMove) : 'No move has been played yet.';
+  const latestMoveAnchor = buildLatestMoveAnchor(game, lastMove, moveHistory);
   const moveHint = plannedMove ? describePlannedMove(plannedMove) : '';
   const tacticalInfo = tacticalSummary(game, lastMove);
   const context = analyzeCoachMoveContext(game, plannedMove, lastMove, difficulty, moveHistory);
@@ -558,9 +566,55 @@ export function buildDynamicCoachInfo(
     lastMoveInfo,
     moveHint,
     positionFacts,
+    latestMoveAnchor,
     recentTopicsNotice,
-    'Speech rule: speak in first person as the coach and address the student as "you". If the position is routine or there is no useful chess lesson, stay silent. Do not blandly describe what the student just moved. If I have a check, winning capture, or decisive tactic available (as shown in my planned move), I may reference that I see a strong response using "I can" language - but do not announce the exact move. If the current check ownership says I am in check, I must never tell the student "you are in check"; if it says the student is in check, I must never say I am in check. Speak only for a real teaching moment: a blunder, tactic, missed threat, principle, weak square, pawn structure, development, king safety, or endgame idea. Never write raw chess notation - capitalize file letters and separate letter from digit: "the A file", "E 4", "knight to F 3", "bishop takes E 5". TTS needs the capital letter so it reads it as the letter name, not the article.',
+    'Speech rule: speak in first person as the coach and address the student as "you". React ONLY to the LATEST MOVE ANCHOR (the move that was actually just played) and the resulting position — never praise or critique an older move from the recent history as if it just happened. If the position is routine or there is no useful chess lesson, stay silent. Do not blandly describe what the student just moved. If I have a check, winning capture, or decisive tactic available (as shown in my planned move), I may reference that I see a strong response using "I can" language - but do not announce the exact move. A capture is only something "you" (the student) can make when it is the student\'s turn (White to move); when it is my turn (Black to move) every capture is mine, so I say "I can take" and never "you can take". If the current check ownership says I am in check, I must never tell the student "you are in check"; if it says the student is in check, I must never say I am in check. Speak only for a real teaching moment: a blunder, tactic, missed threat, principle, weak square, pawn structure, development, king safety, or endgame idea. Never write raw chess notation - capitalize file letters and separate letter from digit: "the A file", "E 4", "knight to F 3", "bishop takes E 5". TTS needs the capital letter so it reads it as the letter name, not the article.',
   ].filter(Boolean).join(' ').trim();
+}
+
+// A hard anchor for "what just happened". The recurring failure mode in the logs was the
+// coach praising/criticising a move that was several plies old (e.g. praising castling that
+// happened 4 plies earlier, still visible in the 10-move history window). This block states
+// the single latest move unambiguously and the rules that gate stale commentary.
+function buildLatestMoveAnchor(
+  game: Chess,
+  lastMove?: Move | null,
+  moveHistory: Array<{ san: string; from: string; to: string; piece: string; captured?: string; by: string }> = [],
+): string {
+  if (!lastMove) return '';
+  const ownership = moveOwnership(lastMove.color);
+  const sideToMove = game.turn() === 'w' ? 'the student (White)' : 'I, the coach (Black)';
+  const isCastle = lastMove.san === 'O-O' || lastMove.san === 'O-O-O';
+  const studentCastledThisMove = isCastle && lastMove.color === 'w';
+  // Has the student castled at any earlier point? Either it shows in the recorded history,
+  // or White has lost both castling rights with the king off its start square.
+  const studentCastledEarlier = moveHistory.some(
+    (m) => m.by === 'You' && (m.san === 'O-O' || m.san === 'O-O-O'),
+  ) && !studentCastledThisMove;
+  const whiteRights = game.fen().split(' ')[2] ?? '-';
+  const whiteKing = game.board().flat().find((p) => p?.type === 'k' && p.color === 'w');
+  const whiteKingMoved = Boolean(whiteKing && whiteKing.square !== 'e1');
+  const studentHasCastled = studentCastledThisMove || studentCastledEarlier || (whiteKingMoved && !/[KQ]/.test(whiteRights));
+
+  const captureClause = lastMove.captured
+    ? `, capturing ${ownership.opponentPossessive} ${pieceName(lastMove.captured)}`
+    : '';
+  const checkClause = lastMove.san.includes('#')
+    ? ' (this is checkmate/check — handle it via the check ownership line)'
+    : lastMove.san.includes('+')
+      ? ' (this move gives check — handle it via the check ownership line)'
+      : '';
+  const lines = [
+    'LATEST MOVE ANCHOR (this is the ONLY move you may praise or critique — everything in the recent history above is older and already addressed):',
+    `The latest move was: ${ownership.moverPhrase} moved ${ownership.moverPossessive} ${pieceName(lastMove.piece)} from ${formatSquare(lastMove.from)} to ${formatSquare(lastMove.to)}${captureClause} (${lastMove.san})${checkClause}.`,
+    `It is now ${sideToMove} to move.`,
+    `Latest move is castling: ${studentCastledThisMove ? 'YES — the student just castled, so praising castling now is correct' : 'no'}.`,
+    studentHasCastled
+      ? 'Castling status: the student HAS ALREADY castled. Do NOT tell the student to castle, do NOT say "you still have castling available", and do NOT praise castling unless the latest move itself is the castling move.'
+      : 'Castling status: the student has NOT castled yet.',
+    'If the latest move is not castling, do not bring up castling as if it just happened. Comment on the latest move itself or the position it created.',
+  ];
+  return lines.join(' ');
 }
 
 function buildAttributionCheatsheet(
