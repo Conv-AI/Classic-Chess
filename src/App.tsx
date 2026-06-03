@@ -83,8 +83,8 @@ function MicButton({ className }: { className?: string }) {
     <button
       className={`mic-button ${micOn ? 'mic-on' : ''} ${className ?? ''}`}
       onClick={toggle}
-      title={micOn ? 'Mute microphone' : 'Enable microphone'}
       aria-label={micOn ? 'Mute microphone' : 'Enable microphone'}
+      data-tooltip={micOn ? 'Mute microphone' : 'Enable microphone'}
     >
       {micOn ? '🎙' : '🎤'}
     </button>
@@ -133,7 +133,6 @@ function App() {
     setLoadingStep(`Loading ${selectedCoach.name} and the chess room...`);
     const avatarReady = new Promise<void>((resolve) => {
       avatarReadyResolverRef.current = resolve;
-      window.setTimeout(resolve, 12000);
     });
     debugLog('App', `Awaiting connectCoach + avatar prewarm for ${selectedCoach.name}`);
     await Promise.all([chessConvai.connectCoach(selectedCoach), avatarReady]);
@@ -155,6 +154,7 @@ function App() {
           coachId={coachId}
           difficultyId={difficultyId}
           coachingControlMode={coachingControlMode}
+          isCovered={screen === 'loading'}
           onBackToMenu={() => {
             refreshSessions();
             setScreen('menu');
@@ -213,12 +213,7 @@ function App() {
     );
   }
 
-  return (
-    <>
-      {body}
-      <CopyLogsButton />
-    </>
-  );
+  return <>{body}</>;
 }
 
 function CopyLogsButton() {
@@ -234,7 +229,13 @@ function CopyLogsButton() {
   };
   return (
     <div className="debug-copy-wrap">
-      <button className="debug-copy-button" type="button" onClick={onCopy} title="Copy debug logs" aria-label="Copy debug logs">
+      <button
+        className="debug-copy-button"
+        type="button"
+        onClick={onCopy}
+        aria-label="Copy debug logs"
+        data-tooltip={copied ? 'Copied debug logs' : 'Copy debug logs'}
+      >
         <Clipboard size={16} strokeWidth={2.4} />
       </button>
       {copied && <span className="debug-copy-tooltip">Copied!</span>}
@@ -249,6 +250,7 @@ function ChessGame({
   onBackToMenu,
   onSessionsChanged,
   onCoachReady,
+  isCovered = false,
 }: {
   coachId: CoachId;
   difficultyId: DifficultyId;
@@ -256,6 +258,7 @@ function ChessGame({
   onBackToMenu: () => void;
   onSessionsChanged: () => void;
   onCoachReady?: () => void;
+  isCovered?: boolean;
 }) {
   const coach = getCoach(coachId);
   const difficulty = getDifficulty(difficultyId);
@@ -860,7 +863,7 @@ function ChessGame({
   }
 
   return (
-    <main className="game-screen">
+    <main className={`game-screen${isCovered ? ' is-loading-cover-target' : ''}`}>
       <header className="topbar">
         <button onClick={onBackToMenu}>Menu</button>
         <h1>Classic Chess</h1>
@@ -868,6 +871,7 @@ function ChessGame({
           <span>{difficulty.label}</span>
           <button onClick={() => setChatOpen((open) => !open)}>Chat</button>
           <MicButton />
+          <CopyLogsButton />
         </div>
       </header>
 
@@ -896,7 +900,11 @@ function ChessGame({
             <h2>{game.turn() === 'w' ? 'Your move' : `${coach.name} to move`}</h2>
             <p>{getStatus(game, coach.name)}</p>
             {hintText && <p className="hint-text">{hintText}</p>}
-            <button className="primary-action" onClick={() => void askHint()} disabled={game.turn() !== 'w' || thinking || gameEnded}>
+            <button
+              className="primary-action"
+              onClick={() => void askHint()}
+              disabled={game.turn() !== 'w' || thinking || gameEnded}
+            >
               Ask Hint {hintLevel ? `(${hintLevel}/3)` : ''}
             </button>
             <button className="ghost-action" onClick={resetGame}>New game</button>
@@ -1488,7 +1496,7 @@ function PuzzleScreen({ coachId, difficultyId, onBack }: { coachId: CoachId; dif
           {streak > 0 && <span>{streak} streak</span>}
           {!reviewMode && <span>{batchPos + 1}/{batchIds.length}</span>}
           {reviewMode && <span>{reviewPos + 1}/{reviewIds.length}</span>}
-          <span title="Total progress for this difficulty">{completedIds.length}/{allForDifficulty.length}</span>
+          <span data-tooltip="Total progress for this difficulty">{completedIds.length}/{allForDifficulty.length}</span>
           <button onClick={() => setChatOpen((o) => !o)}>Chat</button>
           <MicButton />
         </div>
@@ -1605,11 +1613,11 @@ function ReplayViewer({ session }: { session: StoredGameSession }) {
         <h2>{session.result}</h2>
         <p>{session.analysis?.opening ?? 'Analysis pending or not generated yet.'}</p>
         <div className="replay-controls">
-          <button title="Start" aria-label="Start" onClick={() => setPly(0)}><ChevronsLeft size={18} /></button>
-          <button title="Previous" aria-label="Previous" onClick={() => setPly((value) => Math.max(0, value - 1))}><ChevronLeft size={18} /></button>
+          <button data-tooltip="Start" aria-label="Start" onClick={() => setPly(0)}><ChevronsLeft size={18} /></button>
+          <button data-tooltip="Previous" aria-label="Previous" onClick={() => setPly((value) => Math.max(0, value - 1))}><ChevronLeft size={18} /></button>
           <span>{ply}/{session.moves.length}</span>
-          <button title="Next" aria-label="Next" onClick={() => setPly((value) => Math.min(session.moves.length, value + 1))}><ChevronRight size={18} /></button>
-          <button title="End" aria-label="End" onClick={() => setPly(session.moves.length)}><ChevronsRight size={18} /></button>
+          <button data-tooltip="Next" aria-label="Next" onClick={() => setPly((value) => Math.min(session.moves.length, value + 1))}><ChevronRight size={18} /></button>
+          <button data-tooltip="End" aria-label="End" onClick={() => setPly(session.moves.length)}><ChevronsRight size={18} /></button>
         </div>
         <ol className="replay-moves invisible-scroll">
           {session.moves.map((move, index) => (

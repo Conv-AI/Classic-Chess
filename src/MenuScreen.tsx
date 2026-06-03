@@ -182,7 +182,7 @@ export default function MenuScreen({
                   className="coaching-control-info"
                   role="img"
                   aria-label="About coaching control"
-                  title={COACHING_CONTROL_TOOLTIP}
+                  data-tooltip={COACHING_CONTROL_TOOLTIP}
                   tabIndex={0}
                 >
                   ?
@@ -205,7 +205,7 @@ export default function MenuScreen({
                       role="radio"
                       aria-checked={isSelected}
                       className={`coaching-control-option${isSelected ? ' is-selected' : ''}`}
-                      title={option.description}
+                      data-tooltip={option.description}
                       onClick={() => onCoachingControlModeChange(option.value)}
                     >
                       {option.label}

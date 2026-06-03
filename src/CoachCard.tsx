@@ -1,4 +1,4 @@
-import { Suspense, useEffect, useRef } from 'react';
+import { Component, Suspense, useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { Canvas } from '@react-three/fiber';
 import { useGLTF } from '@react-three/drei';
 import type { CoachConfig } from './coachConfig';
@@ -28,18 +28,77 @@ type Props = {
   onAddToDataset?: () => void;
 };
 
+type CharacterErrorBoundaryProps = {
+  children: ReactNode;
+  onError: (error: Error) => void;
+  resetKey: string;
+};
+
+class CharacterErrorBoundary extends Component<CharacterErrorBoundaryProps, { hasError: boolean }> {
+  state = { hasError: false };
+
+  static getDerivedStateFromError() {
+    return { hasError: true };
+  }
+
+  componentDidCatch(error: Error) {
+    this.props.onError(error);
+  }
+
+  componentDidUpdate(prevProps: CharacterErrorBoundaryProps) {
+    if (prevProps.resetKey !== this.props.resetKey && this.state.hasError) {
+      this.setState({ hasError: false });
+    }
+  }
+
+  render() {
+    if (this.state.hasError) return null;
+    return this.props.children;
+  }
+}
+
 export default function CoachCard({ coach, status, lastLine, onReady, onAddToDataset }: Props) {
   const modelUrl = assetUrl(coach.modelFile);
   const idleUrl = assetUrl(coach.idleFile);
   const framing = FRAMING_BY_ASSET[coach.assetName] ?? FRAMING_BY_ASSET.Danielle;
   const lineRef = useRef<HTMLParagraphElement>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
+  const readyNotifiedRef = useRef(false);
+  const [characterReady, setCharacterReady] = useState(false);
+  const [characterFailed, setCharacterFailed] = useState(false);
+  const [isMobileCanvas] = useState(() => (
+    typeof window !== 'undefined' &&
+    window.matchMedia('(pointer: coarse), (max-width: 700px)').matches
+  ));
 
   useGLTF.preload(modelUrl);
   useGLTF.preload(idleUrl);
   debugLog('CoachCard', `Rendering coach=${coach.id} model=${coach.modelFile}`);
 
   const MAX_BUBBLE_HEIGHT = 210;
+  const characterResetKey = `${coach.id}:${modelUrl}:${idleUrl}`;
+
+  useEffect(() => {
+    readyNotifiedRef.current = false;
+    setCharacterReady(false);
+    setCharacterFailed(false);
+  }, [characterResetKey]);
+
+  const handleCharacterReady = useCallback(() => {
+    if (readyNotifiedRef.current) return;
+    readyNotifiedRef.current = true;
+    setCharacterReady(true);
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        onReady?.();
+      });
+    });
+  }, [onReady]);
+
+  const handleCharacterError = useCallback((error: Error) => {
+    setCharacterFailed(true);
+    debugLog('CoachCard', `Character failed to load for coach=${coach.id}: ${error.message}`);
+  }, [coach.id]);
 
   useEffect(() => {
     const wrap = wrapRef.current;
@@ -64,10 +123,10 @@ export default function CoachCard({ coach, status, lastLine, onReady, onAddToDat
 
   return (
     <section className="coach-card character-card" aria-label={`${coach.name} chess coach`}>
-      <div className="character-window">
+      <div className={`character-window${characterReady ? ' is-ready' : ''}${characterFailed ? ' has-error' : ''}`}>
         <Canvas
           camera={{ position: [0, 1.4, 0.9], fov: 36 }}
-          dpr={[1.25, 2]}
+          dpr={isMobileCanvas ? [1, 1.35] : [1.25, 2]}
           gl={{ antialias: true, alpha: false, powerPreference: 'high-performance' }}
           style={{ background: coach.bgColor }}
           onCreated={({ camera, gl, scene }) => {
@@ -81,24 +140,32 @@ export default function CoachCard({ coach, status, lastLine, onReady, onAddToDat
           <directionalLight position={[1, 2, 2]} intensity={1.1} />
           <directionalLight position={[-1, 1, 0]} intensity={0.45} />
           <pointLight position={[0, 1.5, 1]} intensity={0.35} color="#ffe0c0" />
-          <Suspense fallback={null}>
-            <ReallusionCharacter
-              coachId={coach.id}
-              assetName={coach.assetName}
-              charUrl={modelUrl}
-              animUrl={idleUrl}
-              onReady={onReady}
-              framing={{
-                cameraZ: 0.9,
-                fov: 36,
-                lookAtY: 1.4,
-                topInsetWorld: framing.topInsetWorld,
-                portraitCropBias: framing.portraitCropBias,
-                horizontalOffset: framing.horizontalOffset,
-              }}
-            />
-          </Suspense>
+          <CharacterErrorBoundary resetKey={characterResetKey} onError={handleCharacterError}>
+            <Suspense fallback={null}>
+              <ReallusionCharacter
+                coachId={coach.id}
+                assetName={coach.assetName}
+                charUrl={modelUrl}
+                animUrl={idleUrl}
+                onReady={handleCharacterReady}
+                framing={{
+                  cameraZ: 0.9,
+                  fov: 36,
+                  lookAtY: 1.4,
+                  topInsetWorld: framing.topInsetWorld,
+                  portraitCropBias: framing.portraitCropBias,
+                  horizontalOffset: framing.horizontalOffset,
+                }}
+              />
+            </Suspense>
+          </CharacterErrorBoundary>
         </Canvas>
+        {!characterReady && (
+          <div className="character-loading" aria-live="polite">
+            <span className="character-loading-mark">{characterFailed ? '!' : coach.name.charAt(0)}</span>
+            <strong>{characterFailed ? 'Coach could not load' : `Loading ${coach.name}`}</strong>
+          </div>
+        )}
       </div>
       <div className="character-caption">
         <div className="caption-info">
@@ -110,8 +177,8 @@ export default function CoachCard({ coach, status, lastLine, onReady, onAddToDat
             type="button"
             className="add-dataset-btn"
             onClick={onAddToDataset}
-            title="Log this dialogue exchange to dataset"
             aria-label="Add to dataset"
+            data-tooltip="Log this dialogue exchange to dataset"
           >
             +
           </button>

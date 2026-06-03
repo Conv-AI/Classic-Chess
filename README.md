@@ -13,6 +13,9 @@ Classic Chess is a React, TypeScript, Vite chess coaching app. It combines `ches
 - Puzzle mode with hints, five-puzzle groups, and mistake review
 - Saved games and replay
 - Post-game analysis
+- Responsive desktop, ultrawide, and mobile layouts for the menu, game board, coach card, controls, and move lists
+- A loading cover that stays up until the behind-the-scenes coach avatar has actually rendered, avoiding avatar pop-in when entering a game
+- In-app styled tooltips and scrollbars for non-obvious controls and scrollable game surfaces
 - Local custom coach creator through Convai Core API helpers
 - Four coach personas: Magnus, Sofia, Arjun, and Leila
 - Optional **Dialogue Dataset** tooling (enabled via `npm run dev:dataset`) for capturing, labeling, and reviewing coach utterances
@@ -51,9 +54,10 @@ Coach character IDs are configured in [src/coachConfig.ts](src/coachConfig.ts).
 
 ## Code Map
 
-- [src/App.tsx](src/App.tsx): app screens, quick play, puzzles, chat drawer, mic buttons, the main game loop, the coaching-control toggle wiring, and the dataset save modal/toast.
+- [src/App.tsx](src/App.tsx): app screens, quick play, puzzles, chat drawer, mic/copy-log controls, the main game loop, the loading-cover handoff, the coaching-control toggle wiring, and the dataset save modal/toast.
 - [src/MenuScreen.tsx](src/MenuScreen.tsx): menu layout, mode tiles, coach/difficulty pickers, and the "Coaching Control" segmented toggle (Game vs Coach) in the bottom-right of the setup panel.
 - [src/DatasetScreen.tsx](src/DatasetScreen.tsx): dialogue-dataset browser with per-entry board preview, dynamic-info inspection, mode/expected-response badges, delete-one and clear-all flows (compile-time eliminated unless `npm run dev:dataset` is used).
+- [src/styles.css](src/styles.css): app theme, board/card styling, desktop/ultrawide scaling, mobile portrait game layout, custom scrollbars, and custom tooltips.
 - [src/chessAi.ts](src/chessAi.ts): chess evaluation helpers, legal target lookup, dynamic Convai context, coach instruction text, and local speech gating (used by the Game-decides path).
 - [src/convaiManager.ts](src/convaiManager.ts): Convai client lifecycle, dynamic-info updates, scripted text turns, auto-LLM context turns via `updateContext`, `llmNoResponse` handling, audio renderer, lipsync frames, mic state, and status events.
 - [src/coachConfig.ts](src/coachConfig.ts): coach persona metadata, character IDs, difficulty settings, and curriculum.
@@ -63,7 +67,7 @@ Coach character IDs are configured in [src/coachConfig.ts](src/coachConfig.ts).
 - [src/puzzles.ts](src/puzzles.ts): puzzle data and scoring.
 - [src/storage.ts](src/storage.ts): localStorage helpers for saved game sessions, puzzle progress, and the persisted `coachingControlMode` setting.
 - [src/convaiCoreApi.ts](src/convaiCoreApi.ts): Convai Core API helpers used by the custom coach creator.
-- [src/CoachCard.tsx](src/CoachCard.tsx): coach card with avatar, caption, and an optional ➕ button that opens the "Add Dialogue to Dataset" modal when dataset tooling is enabled.
+- [src/CoachCard.tsx](src/CoachCard.tsx): coach card with avatar, loading/error state, mobile DPR caps, caption, and an optional add-to-dataset button when dataset tooling is enabled.
 
 ## Convai Integration
 
@@ -249,6 +253,19 @@ Coach cards render GLB avatars through [src/CoachCard.tsx](src/CoachCard.tsx) an
 
 `convaiManager.getLipsyncFrame(coachId)` reads frames from `client.blendshapeQueue` while that coach is speaking. Only the active speaking coach receives frames.
 
+The loading screen works as a cover over a pre-mounted game screen. Quick Play waits for the `CoachCard` / `ReallusionCharacter` ready callback before peeling the cover away, so the board does not appear first and then pop the avatar in afterward. The coach card also shows an in-card loading state while large GLB assets download and lowers Canvas DPR on mobile/coarse-pointer devices to reduce rendering pressure.
+
+## Responsive Layout
+
+The UI is designed around separate desktop and mobile flows rather than scaling the desktop layout down.
+
+- Desktop and ultrawide screens keep the coach, board, and controls in a wide board-focused layout, with the main menu scaling up in width, spacing, and control size on large canvases.
+- Mobile portrait Quick Play uses a vertical order: sticky header, compact avatar card, centered board, game-state actions, then move list.
+- Mobile game screens allow vertical scrolling and keep horizontal overflow locked. Dense panels scroll internally only when the available height is genuinely too small.
+- The debug-log copy button is part of the in-game topbar beside the mic instead of a global floating overlay.
+- Custom styled tooltips are used only for non-obvious/icon controls, such as mic, copy logs, replay navigation, progress count, and coaching-control help.
+- Custom scrollbar styling is scoped to actual scroll containers and page-level mobile game scrolling so desktop panels do not show unnecessary scrollbars.
+
 ## Puzzle Mode
 
 The puzzle bank ships with **25** curated positions — **5 per difficulty** (`new`, `beginner`, `intermediate`, `advanced`, `expert`). Every entry includes a `positionSummary` string in `src/puzzles.ts` that describes the board in plain language (who moves, what pieces matter, what the tension is) so puzzles are easy to audit and extend. Each puzzle was human-audited per the methodology in `docs/AGENT_HANDOFF.md` — square-by-square inventory plus subjective tactical review — because automated tests can pass while puzzles feel broken when you actually play them. We deliberately do not ship a puzzle test suite: the earlier `puzzles.test.ts` / `puzzles.deep.test.ts` would pass on positions that still played as blunders (e.g. an old "Greek gift" puzzle whose solution gave up a bishop for a pawn with no follow-up), so they were removed in favour of human review.
@@ -311,6 +328,8 @@ In dev mode, `debugLog(scope, message)`:
 3. Vite middleware writes them to `debug.log` in the project root.
 
 Older sessions are rotated out automatically once the log exceeds 5 MB. Repeated `CoachCard` and `ReallusionCharacter` messages are deduplicated more aggressively than ordinary logs.
+
+The in-game topbar includes a copy-log icon beside the microphone. It copies the current browser-side debug log to the clipboard and uses the app's styled tooltip/toast treatment instead of a browser-default tooltip.
 
 Useful log lines:
 
