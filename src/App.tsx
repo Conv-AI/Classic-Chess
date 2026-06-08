@@ -1476,44 +1476,7 @@ function PuzzleScreen({ coachId, difficultyId, onBack }: { coachId: CoachId; dif
     setReviewPos(0);
   }
 
-  if (!ready) {
-    return (
-      <LoadingScreen progress={loadingProgress} step={loadingStep}>
-        <CoachCard
-          coach={coach}
-          status="Loading..."
-          onReady={handleAvatarReady}
-        />
-      </LoadingScreen>
-    );
-  }
-
-  if (showIntro) {
-    const sideLabel = puzzle.sideToMove === 'w' ? 'White' : 'Black';
-    return (
-      <main className="game-screen">
-        <header className="topbar">
-          <button onClick={() => clickBack(onBack)}>Menu</button>
-          <h1>Puzzles with AI</h1>
-        </header>
-        <div className="puzzle-intro-overlay">
-          <div className="puzzle-intro-card panel-card">
-            <p className="eyebrow">Puzzle Challenge</p>
-            <h2>Find the best move for {sideLabel}</h2>
-            <ul className="puzzle-intro-rules">
-              <li>Tap a piece, then tap where you want it to go.</li>
-              <li>You can ask for up to 3 hints per puzzle.</li>
-              <li>After {PUZZLE_GROUP_SIZE} puzzles, you can review the ones you got wrong.</li>
-              <li>The coach will stay quiet during routine moves — listen when they speak.</li>
-            </ul>
-            <button className="primary-action" onClick={() => setShowIntro(false)}>Start puzzles</button>
-          </div>
-        </div>
-      </main>
-    );
-  }
-
-  if (allDone) {
+  if (ready && !showIntro && allDone) {
     const totalForDifficulty = allForDifficulty.length;
     return (
       <main className="game-screen">
@@ -1537,7 +1500,7 @@ function PuzzleScreen({ coachId, difficultyId, onBack }: { coachId: CoachId; dif
     );
   }
 
-  if (groupComplete) {
+  if (ready && !showIntro && groupComplete) {
     const wrongCount = wrongInBatch.length;
     const batchSize = batchIds.length;
     const cleanCount = batchSize - wrongCount;
@@ -1586,6 +1549,8 @@ function PuzzleScreen({ coachId, difficultyId, onBack }: { coachId: CoachId; dif
     if (spoken) setFeedback(spoken);
   }
 
+  const sideLabel = puzzle.sideToMove === 'w' ? 'White' : 'Black';
+
   return (
     <main className="game-screen">
       <header className="topbar">
@@ -1608,6 +1573,7 @@ function PuzzleScreen({ coachId, difficultyId, onBack }: { coachId: CoachId; dif
             coach={coach}
             status={coach.name}
             lastLine={feedback || undefined}
+            onReady={handleAvatarReady}
             chatOpen={chatOpen}
             onChatToggle={() => setChatOpen((o) => !o)}
           />
@@ -1645,6 +1611,23 @@ function PuzzleScreen({ coachId, difficultyId, onBack }: { coachId: CoachId; dif
         placeholder="Ask about the puzzle..."
         mic={<MicButton className="chat-mic" />}
       />
+
+      {ready && showIntro && (
+        <div className="puzzle-cover">
+          <div className="puzzle-intro-card panel-card">
+            <p className="eyebrow">Puzzle Challenge</p>
+            <h2>Find the best move for {sideLabel}</h2>
+            <ul className="puzzle-intro-rules">
+              <li>Tap a piece, then tap where you want it to go.</li>
+              <li>You can ask for up to 3 hints per puzzle.</li>
+              <li>After {PUZZLE_GROUP_SIZE} puzzles, you can review the ones you got wrong.</li>
+              <li>The coach will stay quiet during routine moves — listen when they speak.</li>
+            </ul>
+            <button className="primary-action" onClick={() => setShowIntro(false)}>Start puzzles</button>
+          </div>
+        </div>
+      )}
+      {!ready && <LoadingScreen progress={loadingProgress} step={loadingStep} />}
     </main>
   );
 }
@@ -1825,7 +1808,6 @@ function CustomCoachCreator({ onBack }: { onBack: () => void }) {
       </header>
       <section className="creator-layout">
         <div className="panel-card creator-form">
-          <p className="eyebrow">Convai Core API</p>
           <h2>Create your coach</h2>
           {!hasConvaiApiKeyConfigured() && <p className="warning-text">Add a Convai API key from the main menu before creating a coach.</p>}
           <label>Name<input value={name} onChange={(event) => setName(event.target.value)} /></label>
