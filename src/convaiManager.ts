@@ -213,10 +213,10 @@ class ChessConvaiManager {
             conn.streamBuffer = content;
             conn.lastEmittedText = content;
             if (content.length > conn.longestResponseText.length) conn.longestResponseText = content;
-            if (!conn.hasFlushed) {
-              this.emitResponse(conn, content);
-              conn.hasFlushed = true;
-            }
+            // Emit every chunk so the caption streams in smoothly as text arrives.
+            // `content` is cumulative, so each emit shows the text grown so far.
+            this.emitResponse(conn, content);
+            conn.hasFlushed = true;
             if (this.streamDebounce) clearTimeout(this.streamDebounce);
             this.streamDebounce = setTimeout(() => this.flushStream(conn), 200);
           }
