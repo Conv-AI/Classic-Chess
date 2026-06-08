@@ -82,6 +82,9 @@ export default function CoachCard({
     typeof window !== 'undefined' &&
     window.matchMedia('(pointer: coarse), (max-width: 700px)').matches
   ));
+  const [displayedLine, setDisplayedLine] = useState('');
+  const revealTargetRef = useRef('');
+  const revealShownRef = useRef('');
 
   useGLTF.preload(modelUrl);
   useGLTF.preload(idleUrl);
@@ -112,11 +115,53 @@ export default function CoachCard({
     debugLog('CoachCard', `Character failed to load for coach=${coach.id}: ${error.message}`);
   }, [coach.id]);
 
+  // Keep the typewriter target in sync with the latest coach line. When the new
+  // text isn't a continuation of what's already shown (i.e. a brand-new line),
+  // restart the reveal from the beginning.
+  useEffect(() => {
+    const target = lastLine ?? '';
+    revealTargetRef.current = target;
+    if (!target || !target.startsWith(revealShownRef.current)) {
+      revealShownRef.current = '';
+      setDisplayedLine('');
+    }
+  }, [lastLine]);
+
+  // Reveal the coach line smoothly at roughly her speaking cadence so the caption
+  // streams in as she talks instead of appearing all at once when speech ends.
+  useEffect(() => {
+    const CHARS_PER_SEC = 26;
+    let raf = 0;
+    let last = performance.now();
+    let carry = 0;
+    const loop = (now: number) => {
+      const dt = now - last;
+      last = now;
+      const target = revealTargetRef.current;
+      const shown = revealShownRef.current;
+      if (shown.length < target.length) {
+        carry += (dt / 1000) * CHARS_PER_SEC;
+        if (carry >= 1) {
+          const add = Math.min(target.length - shown.length, Math.floor(carry));
+          carry -= add;
+          const nextShown = target.slice(0, shown.length + add);
+          revealShownRef.current = nextShown;
+          setDisplayedLine(nextShown);
+        }
+      } else {
+        carry = 0;
+      }
+      raf = requestAnimationFrame(loop);
+    };
+    raf = requestAnimationFrame(loop);
+    return () => cancelAnimationFrame(raf);
+  }, []);
+
   useEffect(() => {
     const wrap = wrapRef.current;
     if (!wrap) return;
 
-    if (!lastLine) {
+    if (!displayedLine) {
       wrap.style.height = '0px';
       wrap.classList.remove('is-clipped');
       return;
@@ -130,8 +175,10 @@ export default function CoachCard({
       const capped = Math.min(natural, MAX_BUBBLE_HEIGHT);
       wrap.style.height = `${capped}px`;
       wrap.classList.toggle('is-clipped', natural > MAX_BUBBLE_HEIGHT);
+      // Keep the newest revealed text in view while the line types out.
+      wrap.scrollTop = wrap.scrollHeight;
     });
-  }, [lastLine]);
+  }, [displayedLine]);
 
   return (
     <section className="coach-card character-card" aria-label={`${coach.name} chess coach`}>
@@ -226,7 +273,7 @@ export default function CoachCard({
         </div>
       </div>
       <div ref={wrapRef} className="coach-line-wrap">
-        {lastLine && <p ref={lineRef} className="coach-line">{lastLine}</p>}
+        {displayedLine && <p ref={lineRef} className="coach-line">{displayedLine}</p>}
       </div>
     </section>
   );
