@@ -1,4 +1,7 @@
-export type CoachId = 'magnus' | 'sofia' | 'arjun' | 'leila';
+import { loadCustomCoaches, storedCoachToConfig } from './customCoaches';
+
+export type BuiltinCoachId = 'magnus' | 'sofia' | 'arjun' | 'leila';
+export type CoachId = BuiltinCoachId | `custom-${string}`;
 
 export type DifficultyId = 'new' | 'beginner' | 'intermediate' | 'advanced' | 'expert';
 
@@ -158,8 +161,17 @@ export const COACHES: CoachConfig[] = [
 export const DEFAULT_COACH = COACHES[3]; // Leila
 export const DEFAULT_DIFFICULTY = DIFFICULTIES[1];
 
+export function getAllCoaches(): CoachConfig[] {
+  const custom = loadCustomCoaches().map(storedCoachToConfig);
+  return [...COACHES, ...custom];
+}
+
 export function getCoach(id: CoachId): CoachConfig {
-  return COACHES.find((coach) => coach.id === id) ?? DEFAULT_COACH;
+  const builtin = COACHES.find((coach) => coach.id === id);
+  if (builtin) return builtin;
+  const custom = loadCustomCoaches().find((c) => c.id === id);
+  if (custom) return storedCoachToConfig(custom);
+  return DEFAULT_COACH;
 }
 
 export function getDifficulty(id: DifficultyId): DifficultyConfig {

@@ -1,7 +1,11 @@
 import { useState } from 'react';
-import { COACHES, DIFFICULTIES, suggestedDifficultyForCoach, type CoachId, type DifficultyId } from './coachConfig';
+import { KeyRound } from 'lucide-react';
+import { getAllCoaches, DIFFICULTIES, suggestedDifficultyForCoach, type CoachId, type DifficultyId } from './coachConfig';
+import { maskConvaiApiKey, getConvaiApiKey } from './convaiApiKey';
 import { PUZZLES } from './puzzles';
 import type { CoachingControlMode } from './storage';
+import Tooltip from './Tooltip';
+import { playUiSound, unlockUiAudio } from './uiSounds';
 
 type Mode = 'quickplay' | 'puzzles';
 
@@ -14,20 +18,20 @@ const PUZZLE_DIFFICULTY_LABELS: Record<string, string> = {
 };
 
 const COACHING_CONTROL_TOOLTIP =
-  'Choose who decides when the coach speaks during Quick Play. ' +
-  '"Game" means the game logic inspects every move and only triggers the coach when there is a teaching point. ' +
-  '"Coach" lets Convai\'s LLM see the full context every turn and decide whether to chime in on its own.';
+  'Coach mode — she sees the board every turn and decides when to comment. Game mode — she only speaks on teaching moments (tactics, captures, king safety).';
 
-const COACHING_CONTROL_OPTIONS: Array<{ value: CoachingControlMode; label: string; description: string }> = [
-  {
-    value: 'game',
-    label: 'Game',
-    description: 'Game logic picks the teaching moments.',
-  },
+const COACHING_CONTROL_OPTIONS: Array<{ value: CoachingControlMode; label: string; description: string; tooltip: string }> = [
   {
     value: 'coach',
     label: 'Coach',
-    description: 'Convai decides when to speak.',
+    description: 'Leila decides when to speak.',
+    tooltip: 'Full board context every turn; she chooses when to comment.',
+  },
+  {
+    value: 'game',
+    label: 'Game',
+    description: 'App picks teaching moments.',
+    tooltip: 'She only speaks when captures, tactics, or king-safety heuristics fire.',
   },
 ];
 
@@ -44,6 +48,7 @@ type Props = {
   onGames: () => void;
   onCreator: () => void;
   onDataset?: () => void;
+  onManageApiKey?: () => void;
 };
 
 export default function MenuScreen({
@@ -59,9 +64,12 @@ export default function MenuScreen({
   onGames,
   onCreator,
   onDataset,
+  onManageApiKey,
 }: Props) {
   const [selectedMode, setSelectedMode] = useState<Mode>('quickplay');
-  const selectedCoach = COACHES.find((coach) => coach.id === coachId) ?? COACHES[0];
+  const coaches = getAllCoaches();
+  const selectedCoach = coaches.find((coach) => coach.id === coachId) ?? coaches[0];
+  const maskedKey = maskConvaiApiKey(getConvaiApiKey());
 
   const isPuzzles = selectedMode === 'puzzles';
   const difficultyLabel = isPuzzles ? 'Puzzle Challenge' : 'Skill Level';
@@ -80,6 +88,23 @@ export default function MenuScreen({
           <p className="eyebrow">Convai Chess Coaches</p>
           <h1>Classic Chess</h1>
           <p>Choose a coach, set your level, then play a full game, tackle puzzles, review your sessions, or build your own coach.</p>
+          <Tooltip
+            wide
+            text={maskedKey ? 'Click to update your Convai API key' : 'Add your Convai API key to enable coaching'}
+          >
+            <button
+              type="button"
+              className="api-key-badge"
+              onClick={() => {
+                unlockUiAudio();
+                playUiSound('tap');
+                onManageApiKey?.();
+              }}
+            >
+              <KeyRound size={14} aria-hidden="true" />
+              <span>{maskedKey || 'Add API key'}</span>
+            </button>
+          </Tooltip>
         </div>
 
         <div className="mode-grid">
@@ -117,7 +142,7 @@ export default function MenuScreen({
           <div>
             <p className="eyebrow">Coach</p>
             <div className="coach-picker">
-              {COACHES.map((coach) => (
+              {coaches.map((coach) => (
                 <button
                   key={coach.id}
                   className={coach.id === coachId ? 'selected-option' : ''}
@@ -178,15 +203,16 @@ export default function MenuScreen({
                 >
                   Coaching Control
                 </p>
-                <span
-                  className="coaching-control-info"
-                  role="img"
-                  aria-label="About coaching control"
-                  data-tooltip={COACHING_CONTROL_TOOLTIP}
-                  tabIndex={0}
-                >
-                  ?
-                </span>
+                <Tooltip text={COACHING_CONTROL_TOOLTIP} wide placement="left">
+                  <span
+                    className="coaching-control-info"
+                    role="img"
+                    aria-label="About coaching control"
+                    tabIndex={0}
+                  >
+                    ?
+                  </span>
+                </Tooltip>
               </div>
               <p className="coaching-control-sub">
                 {COACHING_CONTROL_OPTIONS.find((opt) => opt.value === coachingControlMode)?.description}
@@ -199,17 +225,21 @@ export default function MenuScreen({
                 {COACHING_CONTROL_OPTIONS.map((option) => {
                   const isSelected = option.value === coachingControlMode;
                   return (
-                    <button
-                      key={option.value}
-                      type="button"
-                      role="radio"
-                      aria-checked={isSelected}
-                      className={`coaching-control-option${isSelected ? ' is-selected' : ''}`}
-                      data-tooltip={option.description}
-                      onClick={() => onCoachingControlModeChange(option.value)}
-                    >
-                      {option.label}
-                    </button>
+                    <Tooltip key={option.value} text={option.tooltip} placement="top">
+                      <button
+                        type="button"
+                        role="radio"
+                        aria-checked={isSelected}
+                        className={`coaching-control-option${isSelected ? ' is-selected' : ''}`}
+                        onClick={() => {
+                          unlockUiAudio();
+                          playUiSound('toggle');
+                          onCoachingControlModeChange(option.value);
+                        }}
+                      >
+                        {option.label}
+                      </button>
+                    </Tooltip>
                   );
                 })}
               </div>
@@ -219,11 +249,11 @@ export default function MenuScreen({
 
         <div className="mode-launch">
           {isPuzzles ? (
-            <button className="menu-play" onClick={onPuzzles}>
+            <button className="menu-play" onClick={() => { unlockUiAudio(); playUiSound('confirm'); onPuzzles(); }}>
               Start Puzzles
             </button>
           ) : (
-            <button className="menu-play" onClick={onQuickPlay}>
+            <button className="menu-play" onClick={() => { unlockUiAudio(); playUiSound('confirm'); onQuickPlay(); }}>
               Quick Play
             </button>
           )}

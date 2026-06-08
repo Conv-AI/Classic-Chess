@@ -52,7 +52,7 @@ button {
   align-items: center;
   justify-content: space-between;
   height: 58px;
-  padding: 0 4.3rem 0 1.25rem;
+  padding: 0 1.25rem;
 }
 
 .topbar h1 {
@@ -64,7 +64,7 @@ button {
 }
 
 .topbar button,
-.topbar span {
+.topbar span:not(.tooltip-trigger) {
   border: 1px solid var(--panel-border);
   border-radius: 12px;
   padding: 0.5rem 0.8rem;
@@ -73,6 +73,13 @@ button {
   font-family: "Trebuchet MS", sans-serif;
   font-size: 0.78rem;
   font-weight: 800;
+}
+
+.topbar .tooltip-trigger {
+  border: none;
+  padding: 0;
+  background: transparent;
+  border-radius: 0;
 }
 
 .topbar button {
@@ -84,6 +91,14 @@ button {
   align-items: center;
   gap: 0.5rem;
   z-index: 1;
+}
+
+.topbar-actions .ghost-action {
+  width: auto;
+  min-width: 5.5rem;
+  margin-top: 0;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .app-shell {
@@ -164,6 +179,13 @@ button {
   flex: 0 0 60px;
   padding: 0 1rem;
   background: rgba(25, 23, 19, 0.86);
+  overflow: visible;
+}
+
+.caption-actions,
+.coaching-control-header,
+.menu-heading {
+  overflow: visible;
 }
 
 .character-caption strong {
@@ -182,6 +204,41 @@ button {
   overflow: hidden;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
+}
+
+.caption-info {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  min-width: 0;
+  flex: 1;
+}
+
+.caption-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex-shrink: 0;
+}
+
+.coach-chat-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  border: 1px solid var(--panel-border);
+  border-radius: 999px;
+  background: rgba(244, 234, 216, 0.08);
+  color: var(--cream);
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.coach-chat-btn:hover,
+.coach-chat-btn.is-open {
+  background: rgba(244, 234, 216, 0.18);
+  border-color: rgba(244, 234, 216, 0.35);
 }
 
 .portrait-glow {
@@ -392,9 +449,10 @@ h2 {
   height: calc(100% - 1.4rem);
   max-height: none;
   margin: 0;
-  padding: 0;
+  padding: 0 0.75rem 0 0;
   overflow: auto;
   list-style: none;
+  scrollbar-gutter: stable;
 }
 
 .move-card {
@@ -429,9 +487,15 @@ h2 {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 0.75rem;
   border-bottom: 1px solid rgba(244, 234, 216, 0.1);
-  padding: 0.45rem 0;
+  padding: 0.45rem 0.15rem 0.45rem 0;
   color: var(--muted);
+}
+
+.move-card li strong {
+  flex-shrink: 0;
+  padding-right: 0.25rem;
 }
 
 .move-card strong {
@@ -452,12 +516,27 @@ h2 {
   backdrop-filter: blur(18px);
 }
 
+.chat-drawer-corner {
+  position: fixed;
+  right: 1.25rem;
+  bottom: 1.25rem;
+  z-index: 45;
+}
+
 .chat-drawer-header {
   display: flex;
   align-items: center;
   gap: 0.5rem;
   justify-content: space-between;
   margin-bottom: 0.75rem;
+}
+
+.chat-drawer-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin-left: auto;
+  flex-shrink: 0;
 }
 
 /* Mic toggle button — lives in topbar and chat drawer */
@@ -484,7 +563,7 @@ h2 {
 }
 
 .mic-button.chat-mic {
-  margin-left: auto;
+  margin-left: 0;
 }
 
 .chat-drawer-header strong {
@@ -1495,6 +1574,18 @@ h2 {
   border: 1px solid rgba(244, 234, 216, 0.14);
   background: rgba(25, 23, 19, 0.6);
   border-radius: 12px;
+  overflow: visible;
+}
+
+.coaching-control-toggle .tooltip-trigger {
+  display: block;
+  width: 100%;
+  min-width: 0;
+}
+
+.coaching-control-toggle .coaching-control-option {
+  width: 100%;
+  box-sizing: border-box;
 }
 
 .coaching-control-option {
@@ -1792,8 +1883,8 @@ h2 {
 }
 
 .debug-copy-button {
-  width: 34px;
-  height: 34px;
+  width: 42px;
+  height: 42px;
   padding: 0;
   border: 1px solid var(--panel-border);
   border-radius: 12px;
@@ -1804,6 +1895,11 @@ h2 {
   display: flex;
   align-items: center;
   justify-content: center;
+}
+
+.debug-copy-button svg {
+  width: 22px;
+  height: 22px;
 }
 
 .debug-copy-button:hover {
@@ -2384,67 +2480,92 @@ body::-webkit-scrollbar-thumb,
   border-radius: 999px;
 }
 
-[data-tooltip] {
-  position: relative;
+.tooltip-trigger {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
 }
 
-[data-tooltip]::after {
-  content: attr(data-tooltip);
-  position: absolute;
-  left: 50%;
-  top: calc(100% + 8px);
-  z-index: 3000;
-  max-width: min(220px, calc(100vw - 2rem));
-  padding: 0.4rem 0.55rem;
+.app-tooltip {
+  position: fixed;
+  z-index: 10000;
+  max-width: min(300px, calc(100vw - 1.5rem));
+  min-width: 160px;
+  padding: 0.45rem 0.65rem;
   border: 1px solid rgba(216, 167, 79, 0.36);
   border-radius: 8px;
-  background: rgba(25, 23, 19, 0.96);
+  background: rgba(25, 23, 19, 0.97);
   box-shadow: 0 10px 28px rgba(0, 0, 0, 0.42);
   color: var(--cream);
   font-family: "Trebuchet MS", sans-serif;
-  font-size: 0.68rem;
-  font-weight: 800;
-  line-height: 1.25;
-  text-align: center;
+  font-size: 0.72rem;
+  font-weight: 700;
+  line-height: 1.4;
+  text-align: left;
   white-space: normal;
-  opacity: 0;
+  word-break: normal;
+  overflow-wrap: break-word;
   pointer-events: none;
-  transform: translate(-50%, -3px);
-  transition: opacity 140ms ease, transform 140ms ease;
 }
 
-[data-tooltip]::before {
-  content: "";
-  position: absolute;
-  left: 50%;
-  top: calc(100% + 3px);
-  z-index: 3001;
-  width: 8px;
-  height: 8px;
-  border-left: 1px solid rgba(216, 167, 79, 0.36);
-  border-top: 1px solid rgba(216, 167, 79, 0.36);
-  background: rgba(25, 23, 19, 0.96);
-  opacity: 0;
-  pointer-events: none;
-  transform: translate(-50%, -3px) rotate(45deg);
-  transition: opacity 140ms ease, transform 140ms ease;
+.app-tooltip.is-wide {
+  max-width: min(360px, calc(100vw - 1.5rem));
+  min-width: 260px;
 }
 
-[data-tooltip]:hover::after,
-[data-tooltip]:hover::before,
-[data-tooltip]:focus-visible::after,
-[data-tooltip]:focus-visible::before {
-  opacity: 1;
-  transform: translate(-50%, 0);
+.api-key-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-top: 0.65rem;
+  padding: 0.35rem 0.65rem;
+  border: 1px solid var(--panel-border);
+  border-radius: 999px;
+  background: rgba(244, 234, 216, 0.08);
+  color: var(--muted);
+  font-family: ui-monospace, monospace;
+  font-size: 0.72rem;
+  cursor: pointer;
 }
 
-[data-tooltip]:hover::before,
-[data-tooltip]:focus-visible::before {
-  transform: translate(-50%, 0) rotate(45deg);
+.api-key-modal .api-key-steps {
+  text-align: left;
+  margin: 0.5rem 0 0.75rem;
+  padding-left: 1.2rem;
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.45;
 }
 
-[data-tooltip]:focus-visible::before {
-  transform: translate(-50%, 0) rotate(45deg);
+.api-key-modal .api-key-steps a {
+  color: var(--gold);
+}
+
+.api-key-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  text-align: left;
+  width: 100%;
+}
+
+.api-key-field input {
+  width: 100%;
+  border: 1px solid var(--panel-border);
+  border-radius: 10px;
+  padding: 0.55rem 0.7rem;
+  background: rgba(244, 234, 216, 0.07);
+  color: var(--cream);
+}
+
+.game-stage.your-turn-pulse {
+  animation: your-turn-pulse 1.1s ease-out 1;
+}
+
+@keyframes your-turn-pulse {
+  0% { box-shadow: 0 0 0 0 rgba(216, 167, 79, 0.55); }
+  70% { box-shadow: 0 0 0 14px rgba(216, 167, 79, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(216, 167, 79, 0); }
 }
 
 @supports (height: 100dvh) {
@@ -2977,7 +3098,7 @@ body {
   }
 
   .topbar button,
-  .topbar span {
+  .topbar span:not(.tooltip-trigger) {
     padding: 0.42rem 0.55rem;
     border-radius: 10px;
     font-size: 0.7rem;
@@ -3291,13 +3412,13 @@ body {
   }
 
   .topbar button,
-  .topbar span {
+  .topbar span:not(.tooltip-trigger) {
     min-width: 0;
     padding: 0.38rem 0.5rem;
     white-space: nowrap;
   }
 
-  .topbar-actions span {
+  .topbar-actions span:not(.tooltip-trigger) {
     display: inline-block;
     max-width: 6.5rem;
     overflow: hidden;

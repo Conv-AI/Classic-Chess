@@ -12,7 +12,8 @@ describe('coach prompting helpers', () => {
 
     expect(info).toContain('Student level: Intermediate');
     expect(info).toContain(difficulty.curriculum);
-    expect(info).toContain('speak in first person');
+    const instruction = buildCoachInstruction(coach, difficulty, 'move');
+    expect(instruction).toContain('first person');
     expect(info).toContain('Current board FEN');
     expect(info).toContain('Recent move history');
     expect(info).toContain('Position facts');

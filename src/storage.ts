@@ -104,7 +104,7 @@ export function resetPuzzleProgress(difficulty: DifficultyId): void {
 export type CoachingControlMode = 'game' | 'coach';
 
 const COACHING_CONTROL_KEY = 'classic-chess.coachingControlMode.v1';
-const DEFAULT_COACHING_CONTROL_MODE: CoachingControlMode = 'game';
+const DEFAULT_COACHING_CONTROL_MODE: CoachingControlMode = 'coach';
 
 export function loadCoachingControlMode(): CoachingControlMode {
   try {

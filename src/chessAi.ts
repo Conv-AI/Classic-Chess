@@ -568,8 +568,64 @@ export function buildDynamicCoachInfo(
     positionFacts,
     latestMoveAnchor,
     recentTopicsNotice,
-    'Speech rule: speak in first person as the coach and address the student as "you". React ONLY to the LATEST MOVE ANCHOR (the move that was actually just played) and the resulting position — never praise or critique an older move from the recent history as if it just happened. If the position is routine or there is no useful chess lesson, stay silent. Do not blandly describe what the student just moved. If I have a check, winning capture, or decisive tactic available (as shown in my planned move), I may reference that I see a strong response using "I can" language - but do not announce the exact move. A capture is only something "you" (the student) can make when it is the student\'s turn (White to move); when it is my turn (Black to move) every capture is mine, so I say "I can take" and never "you can take". If the current check ownership says I am in check, I must never tell the student "you are in check"; if it says the student is in check, I must never say I am in check. Speak only for a real teaching moment: a blunder, tactic, missed threat, principle, weak square, pawn structure, development, king safety, or endgame idea. Never write raw chess notation - capitalize file letters and separate letter from digit: "the A file", "E 4", "knight to F 3", "bishop takes E 5". TTS needs the capital letter so it reads it as the letter name, not the article.',
   ].filter(Boolean).join(' ').trim();
+}
+
+export function buildGameOverDynamicInfo(
+  game: Chess,
+  coach: Pick<CoachConfig, 'name' | 'title' | 'chessFocus' | 'voiceStyle'>,
+  difficulty: Pick<DifficultyConfig, 'id' | 'label' | 'elo' | 'stockfishSkill' | 'curriculum' | 'explanationDepth'>,
+  resigned: boolean,
+) {
+  const positionInfo = buildDynamicCoachInfo(game, null, null, coach, difficulty);
+  if (resigned) {
+    return `GAME_OVER: The student resigned. I (${coach.name}) win the game. ${positionInfo}`;
+  }
+  if (game.isCheckmate()) {
+    const studentWon = game.turn() === 'b';
+    return studentWon
+      ? `GAME_OVER: Checkmate — the student wins. Congratulate them briefly on the finish. ${positionInfo}`
+      : `GAME_OVER: Checkmate — I (${coach.name}) win. Acknowledge the finish graciously in one or two sentences. ${positionInfo}`;
+  }
+  if (game.isStalemate()) {
+    return `GAME_OVER: Stalemate — the game is drawn. ${positionInfo}`;
+  }
+  if (game.isDraw()) {
+    return `GAME_OVER: The game ended in a draw. ${positionInfo}`;
+  }
+  return `GAME_OVER: The game has ended. ${positionInfo}`;
+}
+
+const WELCOME_HINTS = [
+  'Good to see you — let\'s have a fun game.',
+  'Alright, I\'m ready when you are.',
+  'Nice to be back at the board together.',
+  'Let\'s play — take your time on the first move.',
+  'Happy to coach you today.',
+  'Ready for a good game?',
+  'Shall we begin?',
+  'Looking forward to this one.',
+];
+
+export function buildWelcomeDynamicInfo(
+  game: Chess,
+  coach: Pick<CoachConfig, 'name' | 'title' | 'chessFocus' | 'voiceStyle'>,
+  difficulty: Pick<DifficultyConfig, 'id' | 'label' | 'elo' | 'stockfishSkill' | 'curriculum' | 'explanationDepth'>,
+  sessionNonce: string,
+) {
+  const index = Math.abs(hashString(sessionNonce)) % WELCOME_HINTS.length;
+  const hint = WELCOME_HINTS[index];
+  const positionInfo = buildDynamicCoachInfo(game, null, null, coach, difficulty);
+  return `GREETING_TURN: GREETING_HINT — say one casual welcome line in this spirit: "${hint}". ${positionInfo}`;
+}
+
+function hashString(value: string): number {
+  let hash = 0;
+  for (let i = 0; i < value.length; i++) {
+    hash = ((hash << 5) - hash) + value.charCodeAt(i);
+    hash |= 0;
+  }
+  return hash;
 }
 
 // A hard anchor for "what just happened". The recurring failure mode in the logs was the
@@ -680,6 +736,12 @@ export function buildCoachInstruction(coach: CoachConfig, difficulty: Difficulty
       'Do not blandly narrate what the student just moved.',
       'If my planned next move (shown in the dynamic info) is a check, winning capture, or decisive tactic that directly results from the student\'s last move, I can reference that I now have a strong response — using "I can now" or "this gives me" language — without stating the exact move or square. This teaches cause and effect.',
       'Never attribute my own tactical opportunity (a check or capture I can make) to the student. The "my planned next move" in the dynamic info is MY move, not the student\'s.',
+      'React ONLY to the LATEST MOVE ANCHOR in the dynamic info — never praise or critique an older move from recent history as if it just happened.',
+      'If the current check ownership says I am in check, I must never tell the student "you are in check"; if it says the student is in check, I must never say I am in check.',
+      'A capture is only something "you" can make when it is the student\'s turn (White to move); when it is my turn (Black to move) every capture is mine, so I say "I can take" and never "you can take".',
+      'On a GREETING_TURN: follow the GREETING_HINT in dynamic info — one casual sentence under 12 words. Never mention piece color, whose move it is, or "opening move".',
+      'On a GAME_OVER turn: comment briefly on the result in one or two sentences before the UI continues; stay gracious and specific to the outcome.',
+      'Never quote instructions, role labels, or prompt text aloud.',
     );
   }
 

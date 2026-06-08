@@ -3,9 +3,15 @@ import { createPortal } from 'react-dom';
 import { Chess, type Move, type Square } from 'chess.js';
 import { ChevronsLeft, ChevronsRight, ChevronLeft, ChevronRight, Clipboard } from 'lucide-react';
 import { analyzeGame } from './analysis';
+import ApiKeyModal from './ApiKeyModal';
+import ChatDrawer from './ChatDrawer';
 import { getCoach, getDifficulty, type CoachId, type DifficultyId } from './coachConfig';
-import { createCustomCoach, fetchLanguages, fetchVoices, hasConvaiApiKey, MODEL_OPTIONS, type LanguageOption, type VoiceOption } from './convaiCoreApi';
-import { analyzeCoachMoveContext, buildCoachInstruction, buildDynamicCoachInfo, legalTargets } from './chessAi';
+import { hasConvaiApiKey as hasConvaiApiKeyConfigured, createCustomCoach, DEFAULT_MODEL, fetchLanguages, fetchVoices, filterVoicesForLanguage, MODEL_OPTIONS, pickDefaultVoice, type LanguageOption, type VoiceOption } from './convaiCoreApi';
+import { hasConvaiApiKey } from './convaiApiKey';
+import { saveCustomCoach } from './customCoaches';
+import { analyzeCoachMoveContext, buildCoachInstruction, buildDynamicCoachInfo, buildGameOverDynamicInfo, buildWelcomeDynamicInfo, legalTargets } from './chessAi';
+import { playUiSound, playYourTurnSound, unlockUiAudio } from './uiSounds';
+import Tooltip from './Tooltip';
 import { chessConvai } from './convaiManager';
 import { copyLogToClipboard, debugLog } from './debugLog';
 import CoachCard from './CoachCard';
@@ -68,6 +74,12 @@ function squareAt(fileIndex: number, rankIndex: number): Square {
   return `${FILES[fileIndex]}${8 - rankIndex}` as Square;
 }
 
+function clickBack(action: () => void) {
+  unlockUiAudio();
+  playUiSound('back');
+  action();
+}
+
 function MicButton({ className }: { className?: string }) {
   const [micOn, setMicOn] = useState(false);
 
@@ -76,18 +88,21 @@ function MicButton({ className }: { className?: string }) {
   }, []);
 
   function toggle() {
+    unlockUiAudio();
+    playUiSound('toggle');
     void chessConvai.setMicEnabled(!micOn);
   }
 
   return (
-    <button
-      className={`mic-button ${micOn ? 'mic-on' : ''} ${className ?? ''}`}
-      onClick={toggle}
-      aria-label={micOn ? 'Mute microphone' : 'Enable microphone'}
-      data-tooltip={micOn ? 'Mute microphone' : 'Enable microphone'}
-    >
-      {micOn ? '🎙' : '🎤'}
-    </button>
+    <Tooltip text={micOn ? 'Mute microphone' : 'Enable microphone'} placement="bottom">
+      <button
+        className={`mic-button ${micOn ? 'mic-on' : ''} ${className ?? ''}`}
+        onClick={toggle}
+        aria-label={micOn ? 'Mute microphone' : 'Enable microphone'}
+      >
+        {micOn ? '🎙' : '🎤'}
+      </button>
+    </Tooltip>
   );
 }
 
@@ -100,6 +115,8 @@ function App() {
   const [loadingStep, setLoadingStep] = useState('Setting up the board...');
   const avatarReadyResolverRef = useRef<(() => void) | null>(null);
   const [sessions, setSessions] = useState<StoredGameSession[]>(() => loadSessions());
+  const [apiKeyModalOpen, setApiKeyModalOpen] = useState(() => !hasConvaiApiKey());
+  const [apiKeyVersion, setApiKeyVersion] = useState(0);
   const coach = getCoach(coachId);
 
   const handleCoachingControlModeChange = useCallback((mode: CoachingControlMode) => {
@@ -125,6 +142,10 @@ function App() {
   }, [coach.name, coachId]);
 
   async function startQuickPlay() {
+    if (!hasConvaiApiKey()) {
+      setApiKeyModalOpen(true);
+      return;
+    }
     debugLog('App', `startQuickPlay — mode=quick-play coach=${coach.id} difficulty=${difficultyId}`);
     chessConvai.unlockAudio();
     const selectedCoach = coach;
@@ -135,7 +156,11 @@ function App() {
       avatarReadyResolverRef.current = resolve;
     });
     debugLog('App', `Awaiting connectCoach + avatar prewarm for ${selectedCoach.name}`);
-    await Promise.all([chessConvai.connectCoach(selectedCoach), avatarReady]);
+    const staticPolicy = buildCoachInstruction(selectedCoach, getDifficulty(difficultyId), 'move');
+    await Promise.all([
+      chessConvai.connectCoach(selectedCoach, { staticPolicy, waitForBotReady: true, readyWaitMs: 5000 }),
+      avatarReady,
+    ]);
     debugLog('App', `Coach and avatar ready — transitioning to game`);
     setLoadingProgress(100);
     setLoadingStep(`${selectedCoach.name} is ready.`);
@@ -194,6 +219,7 @@ function App() {
   } else {
     body = (
       <MenuScreen
+        key={`menu-${apiKeyVersion}`}
         coachId={coachId}
         difficultyId={difficultyId}
         savedGameCount={sessions.length}
@@ -209,16 +235,32 @@ function App() {
         }}
         onCreator={() => setScreen('creator')}
         onDataset={DATASET_TOOLS_ENABLED ? () => setScreen('dataset') : undefined}
+        onManageApiKey={() => setApiKeyModalOpen(true)}
       />
     );
   }
 
-  return <>{body}</>;
+  return (
+    <>
+      {body}
+      <ApiKeyModal
+        open={apiKeyModalOpen}
+        required={!hasConvaiApiKey()}
+        onSaved={() => {
+          setApiKeyModalOpen(false);
+          setApiKeyVersion((v) => v + 1);
+        }}
+        onDismiss={hasConvaiApiKey() ? () => setApiKeyModalOpen(false) : undefined}
+      />
+    </>
+  );
 }
 
 function CopyLogsButton() {
   const [copied, setCopied] = useState(false);
   const onCopy = async () => {
+    unlockUiAudio();
+    playUiSound('tap');
     try {
       await copyLogToClipboard();
       setCopied(true);
@@ -229,15 +271,16 @@ function CopyLogsButton() {
   };
   return (
     <div className="debug-copy-wrap">
-      <button
-        className="debug-copy-button"
-        type="button"
-        onClick={onCopy}
-        aria-label="Copy debug logs"
-        data-tooltip={copied ? 'Copied debug logs' : 'Copy debug logs'}
-      >
-        <Clipboard size={16} strokeWidth={2.4} />
-      </button>
+      <Tooltip text={copied ? 'Copied debug logs' : 'Copy debug logs'} placement="bottom">
+        <button
+          className="debug-copy-button"
+          type="button"
+          onClick={onCopy}
+          aria-label="Copy debug logs"
+        >
+          <Clipboard size={20} strokeWidth={2.2} />
+        </button>
+      </Tooltip>
       {copied && <span className="debug-copy-tooltip">Copied!</span>}
     </div>
   );
@@ -276,8 +319,12 @@ function ChessGame({
   const [analysisPending, setAnalysisPending] = useState(false);
   const sessionIdRef = useRef(createSessionId());
   const analysisStartedRef = useRef(false);
-  const gameOverShownRef = useRef(false);
+  const gameOverHandledRef = useRef(false);
+  const welcomeSpokenRef = useRef(false);
   const moveListRef = useRef<HTMLOListElement | null>(null);
+  const prevThinkingRef = useRef(false);
+  const [yourTurnPulse, setYourTurnPulse] = useState(false);
+  const [convaiStatus, setConvaiStatus] = useState(chessConvai.getStatus());
   // Track which speech reasons were last fired and at which fullmove number, so we can
   // suppress repeated positional advice (e.g. "your king is still in the center").
   const spokenReasonsRef = useRef<Map<string, number>>(new Map());
@@ -346,13 +393,30 @@ function ChessGame({
   }, [game, selected]);
 
   const lastMove = history[history.length - 1];
+  const convaiBusy = convaiStatus.convaiTurnInFlight || convaiStatus.thinking || convaiStatus.speaking;
   const status = thinking
     ? `${coach.name} is calculating...`
-    : (coachResponding || guidanceLoading)
+    : (coachResponding || guidanceLoading || convaiBusy)
       ? `${coach.name} is thinking...`
       : resigned
         ? `You resigned. ${coach.name} wins.`
         : getStatus(game, coach.name);
+
+  useEffect(() => chessConvai.onStatus(setConvaiStatus), []);
+
+  useEffect(() => {
+    if (isCovered || welcomeSpokenRef.current) return;
+    if (!convaiStatus.botReady) return;
+    welcomeSpokenRef.current = true;
+    const freshGame = new Chess();
+    const openingInfo = buildDynamicCoachInfo(freshGame, null, null, coach, difficulty);
+    const welcomeInfo = buildWelcomeDynamicInfo(freshGame, coach, difficulty, sessionIdRef.current);
+    void (async () => {
+      await chessConvai.beginNewGame(coach, difficulty, sessionIdRef.current, openingInfo);
+      const spoken = await chessConvai.speakWelcome(coach, welcomeInfo);
+      if (spoken) setCoachLine(spoken);
+    })();
+  }, [isCovered, convaiStatus.botReady, coach, difficulty]);
 
   useEffect(() => {
     return chessConvai.onResponse((response) => {
@@ -375,7 +439,8 @@ function ChessGame({
   const gameEnded = game.isGameOver() || resigned;
 
   useEffect(() => {
-    if (!history.length || !gameEnded || analysisStartedRef.current) return;
+    if (!gameEnded || analysisStartedRef.current) return;
+    if (!history.length && !resigned) return;
     analysisStartedRef.current = true;
     setAnalysisPending(true);
     void analyzeGame(history, game.fen(), async (fen) => {
@@ -388,11 +453,35 @@ function ChessGame({
   }, [difficulty.stockfishSkill, game, history, gameEnded]);
 
   useEffect(() => {
-    if (!gameEnded || !history.length || gameOverShownRef.current) return;
-    gameOverShownRef.current = true;
-    const timer = setTimeout(() => setShowGameOverModal(true), resigned ? 250 : 900);
-    return () => clearTimeout(timer);
-  }, [gameEnded, history.length, resigned]);
+    if (!gameEnded || gameOverHandledRef.current) return;
+    gameOverHandledRef.current = true;
+    let cancelled = false;
+    void (async () => {
+      if (resigned && history.length === 0) {
+        chessConvai.interruptBot(coach);
+        if (!cancelled) setShowGameOverModal(true);
+        return;
+      }
+      const gameOverInfo = buildGameOverDynamicInfo(game, coach, difficulty, resigned);
+      const spoken = await chessConvai.speakGameOver(coach, gameOverInfo);
+      if (cancelled) return;
+      if (spoken) setCoachLine(spoken);
+      if (!cancelled) setShowGameOverModal(true);
+    })();
+    return () => { cancelled = true; };
+  }, [coach, difficulty, game, gameEnded, history.length, resigned]);
+
+  useEffect(() => {
+    const wasThinking = prevThinkingRef.current;
+    prevThinkingRef.current = thinking;
+    if (wasThinking && !thinking && !gameEnded && game.turn() === 'w') {
+      playYourTurnSound();
+      setYourTurnPulse(true);
+      const timer = window.setTimeout(() => setYourTurnPulse(false), 1200);
+      return () => clearTimeout(timer);
+    }
+    return undefined;
+  }, [thinking, game, gameEnded]);
 
   function persistCurrentSession(
     currentGame: Chess,
@@ -418,12 +507,15 @@ function ChessGame({
     });
   }
 
-  function resetGame() {
-    sessionIdRef.current = createSessionId();
+  async function resetGame() {
+    const newSessionId = createSessionId();
+    sessionIdRef.current = newSessionId;
     analysisStartedRef.current = false;
-    gameOverShownRef.current = false;
+    gameOverHandledRef.current = false;
+    welcomeSpokenRef.current = false;
     spokenReasonsRef.current.clear();
-    setGame(new Chess());
+    const freshGame = new Chess();
+    setGame(freshGame);
     setSelected(null);
     setHistory([]);
     setThinking(false);
@@ -441,6 +533,13 @@ function ChessGame({
     setSelectedMoveIdx(null);
     setCoachGuidance('');
     setGuidanceLoading(false);
+
+    const openingInfo = buildDynamicCoachInfo(freshGame, null, null, coach, difficulty);
+    const welcomeInfo = buildWelcomeDynamicInfo(freshGame, coach, difficulty, newSessionId);
+    await chessConvai.beginNewGame(coach, difficulty, newSessionId, openingInfo);
+    welcomeSpokenRef.current = true;
+    const spoken = await chessConvai.speakWelcome(coach, welcomeInfo);
+    if (spoken) setCoachLine(spoken);
   }
 
   function makePlayerMove(from: Square, to: Square) {
@@ -458,6 +557,7 @@ function ChessGame({
     setHintLevel(0);
 
     if (!next.isGameOver()) {
+      chessConvai.interruptBot(coach);
       setThinking(true);
       void makeCoachMove(next.fen(), move, [...history, record]);
     }
@@ -470,11 +570,12 @@ function ChessGame({
     const fullMoveNo = Number(next.fen().split(' ')[5]);
     const recentTopics = recentlySpokenTopics(spokenReasonsRef.current, fullMoveNo);
     const dynamicInfo = buildDynamicCoachInfo(next, planned, playerMove, coach, difficulty, moveHistory, recentTopics);
-    const dynamicContext = `${buildCoachInstruction(coach, difficulty, 'move')} ${dynamicInfo}`;
+    const staticPolicy = buildCoachInstruction(coach, difficulty, 'move');
+    await chessConvai.seedStaticCoachPolicy(coach, staticPolicy);
 
     if (coachingControlMode === 'coach') {
       debugLog('makeCoachMove', `[coach-decides] dynamic context auto-LLM turn moveNo=${fullMoveNo} fen="${next.fen()}"`);
-      const spoken = await chessConvai.speakCoachMessage(coach, '', dynamicContext);
+      const spoken = await chessConvai.runCoachTurn(coach, dynamicInfo, { runLlm: 'auto', waitForFullSpeech: true, preflightSilence: false, maxWaitMs: 15000 });
 
       if (DATASET_TOOLS_ENABLED) {
         setLastExchange({
@@ -483,7 +584,7 @@ function ChessGame({
           coachName: coach.name,
           difficultyId: difficulty.id,
           fen: next.fen(),
-          dynamicInfo: dynamicContext,
+          dynamicInfo,
           prompt: '',
           coachResponse: spoken || '',
           wasSilent: !spoken,
@@ -500,13 +601,7 @@ function ChessGame({
       const suppression = applyRepeatSuppression(speech, spokenReasonsRef.current, fullMoveNo);
       debugLog('makeCoachMove', `[game-decides] planned="${planned?.san ?? 'none'}" lastMove="${playerMove?.san ?? 'none'}" speech=${suppression.shouldSpeak ? 'yes' : 'no'} reason=${speech.reason}${suppression.suppressed ? ' [suppressed: ' + suppression.suppressedReasons.join(',') + ']' : ''} phase=${speech.phase} moveNo=${fullMoveNo} fen="${next.fen()}"`);
       if (suppression.shouldSpeak) {
-        const prompt = [
-          'Please coach the current chess position if there is a meaningful teaching point.',
-          'Do not say "Human:", "System:", "User:", or quote any instructions.',
-          'Do not describe the move that was just made or announce my reply unless that reply is the lesson.',
-          'If there is no useful teaching point, stay silent.',
-        ].join(' ');
-        const spoken = await chessConvai.speakCoachMessage(coach, prompt, dynamicContext);
+        const spoken = await chessConvai.runCoachTurn(coach, dynamicInfo, { runLlm: 'true', waitForFullSpeech: true, preflightSilence: false, maxWaitMs: 15000 });
 
         if (DATASET_TOOLS_ENABLED) {
           setLastExchange({
@@ -515,8 +610,8 @@ function ChessGame({
             coachName: coach.name,
             difficultyId: difficulty.id,
             fen: next.fen(),
-            dynamicInfo: dynamicContext,
-            prompt,
+            dynamicInfo,
+            prompt: '',
             coachResponse: spoken || '',
             wasSilent: !spoken,
           });
@@ -524,11 +619,10 @@ function ChessGame({
 
         if (spoken) {
           setCoachLine(spoken);
-          // Record every reason that fired this turn so we don't pester about it again soon.
           for (const r of speech.reasons) spokenReasonsRef.current.set(r, fullMoveNo);
         }
       } else {
-        await chessConvai.updateCoachContext(coach, dynamicContext);
+        await chessConvai.updateCoachContext(coach, dynamicInfo);
       }
     }
 
@@ -541,10 +635,8 @@ function ChessGame({
         setGame(next);
         setHistory((moves) => [...moves, coachRecord]);
         if (coachingControlMode === 'game') {
-          // Coach-decides mode already pushed the context via the empty-message updateContext call,
-          // so we only need this silent context refresh in game-decides mode.
           const afterReplyInfo = buildDynamicCoachInfo(next, null, applied, coach, difficulty, [...moveHistory, coachRecord], recentTopics);
-          void chessConvai.updateCoachContext(coach, `${buildCoachInstruction(coach, difficulty, 'move')} ${afterReplyInfo}`);
+          void chessConvai.updateCoachContext(coach, afterReplyInfo);
         }
       }
     }
@@ -580,12 +672,12 @@ function ChessGame({
     const localHint = buildHintText(nextLevel, best, coach.name);
     setHintText(localHint);
     const dynamicInfo = buildDynamicCoachInfo(game, best, lastMove ? moveRecordToMoveLike(lastMove) : null, coach, difficulty);
+    await chessConvai.seedStaticCoachPolicy(coach, buildCoachInstruction(coach, difficulty, 'hint'));
     const prompt = [
-      buildCoachInstruction(coach, difficulty, 'hint'),
-      `You asked me for hint level ${nextLevel} of 3.`,
+      `The student asked for hint level ${nextLevel} of 3.`,
       nextLevel < 3 ? 'Do not reveal the exact move.' : `You may reveal this move naturally: ${best?.san ?? 'the best move'}.`,
       localHint,
-      'Use 1-2 useful teaching sentences and avoid raw square notation aloud.',
+      'Use 1-2 useful teaching sentences.',
     ].join(' ');
     const spoken = await chessConvai.speakCoachMessage(coach, prompt, dynamicInfo);
 
@@ -610,6 +702,8 @@ function ChessGame({
   async function sendChat() {
     const text = chatInput.trim();
     if (!text) return;
+    unlockUiAudio();
+    playUiSound('send');
     setChatInput('');
     setCoachResponding(true);
     const dynamicInfo = buildDynamicCoachInfo(game, null, lastMove ? moveRecordToMoveLike(lastMove) : null, coach, difficulty);
@@ -668,6 +762,7 @@ function ChessGame({
       ? `In 2 sentences, explain what makes ${promptSubject} ${move.san} on move ${moveNumber} a reasonable choice and what chess principle it follows.`
       : `In 2-3 sentences, explain concretely why ${promptSubject} ${move.san} on move ${moveNumber} was a ${quality}${km?.bestMove ? ` and what makes ${km.bestMove} stronger` : ''}.`;
 
+    await chessConvai.seedStaticCoachPolicy(coach, buildCoachInstruction(coach, difficulty, 'move'));
     const spoken = await chessConvai.speakCoachMessage(coach, prompt, dynamicCtx);
     if (spoken) {
       setCoachLine(spoken);
@@ -688,9 +783,10 @@ function ChessGame({
     return (
       <main className="game-screen">
         <header className="topbar">
-          <button onClick={() => setShowAnalysis(false)}>← Back</button>
+          <button onClick={() => clickBack(onBackToMenu)}>Menu</button>
           <h1>Post-Game Analysis</h1>
           <div className="topbar-actions">
+            <button className="ghost-action" onClick={() => setShowAnalysis(false)} title="Back to game">Back</button>
             <button className="ghost-action" onClick={resetGame}>New Game</button>
           </div>
         </header>
@@ -701,6 +797,8 @@ function ChessGame({
             status={status}
             lastLine={coachLine}
             onAddToDataset={DATASET_TOOLS_ENABLED ? openSaveModal : undefined}
+            chatOpen={chatOpen}
+            onChatToggle={() => setChatOpen((open) => !open)}
           />
 
           <div className="analysis-panel invisible-scroll">
@@ -858,6 +956,16 @@ function ChessGame({
 
           </div>
         </div>
+
+        <ChatDrawer
+          coachName={coach.name}
+          open={chatOpen}
+          onClose={() => setChatOpen(false)}
+          chatInput={chatInput}
+          onChatInputChange={setChatInput}
+          onSend={() => void sendChat()}
+          mic={<MicButton className="chat-mic" />}
+        />
       </main>
     );
   }
@@ -865,11 +973,10 @@ function ChessGame({
   return (
     <main className={`game-screen${isCovered ? ' is-loading-cover-target' : ''}`}>
       <header className="topbar">
-        <button onClick={onBackToMenu}>Menu</button>
+        <button onClick={() => clickBack(onBackToMenu)}>Menu</button>
         <h1>Classic Chess</h1>
         <div className="topbar-actions">
           <span>{difficulty.label}</span>
-          <button onClick={() => setChatOpen((open) => !open)}>Chat</button>
           <MicButton />
           <CopyLogsButton />
         </div>
@@ -882,9 +989,11 @@ function ChessGame({
           lastLine={coachLine || hintText}
           onReady={onCoachReady}
           onAddToDataset={DATASET_TOOLS_ENABLED ? openSaveModal : undefined}
+          chatOpen={chatOpen}
+          onChatToggle={() => setChatOpen((open) => !open)}
         />
 
-        <section className="game-stage" aria-label="Chess board">
+        <section className={`game-stage${yourTurnPulse ? ' your-turn-pulse' : ''}`} aria-label="Chess board">
           <ChessBoard
             game={game}
             selected={selected}
@@ -931,6 +1040,16 @@ function ChessGame({
 
         </aside>
       </div>
+
+      <ChatDrawer
+        coachName={coach.name}
+        open={chatOpen}
+        onClose={() => setChatOpen(false)}
+        chatInput={chatInput}
+        onChatInputChange={setChatInput}
+        onSend={() => void sendChat()}
+        mic={<MicButton className="chat-mic" />}
+      />
 
       {showGameOverModal && createPortal(
         <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="gameover-title">
@@ -980,27 +1099,6 @@ function ChessGame({
         document.body,
       )}
 
-      {chatOpen && (
-        <section className="chat-drawer" aria-label={`Chat with ${coach.name}`}>
-          <div className="chat-drawer-header">
-            <strong>Ask {coach.name}</strong>
-            <MicButton className="chat-mic" />
-            <button onClick={() => setChatOpen(false)}>Minimize</button>
-          </div>
-          <textarea
-            value={chatInput}
-            onChange={(event) => setChatInput(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === 'Enter' && !event.shiftKey) {
-                event.preventDefault();
-                void sendChat();
-              }
-            }}
-            placeholder="Ask about the current position..."
-          />
-          <button className="primary-action" onClick={() => void sendChat()}>Send</button>
-        </section>
-      )}
 
       {DATASET_TOOLS_ENABLED && toastMessage && (
         <div className="toast-notification" role="status" aria-live="polite">
@@ -1395,7 +1493,7 @@ function PuzzleScreen({ coachId, difficultyId, onBack }: { coachId: CoachId; dif
     return (
       <main className="game-screen">
         <header className="topbar">
-          <button onClick={onBack}>Menu</button>
+          <button onClick={() => clickBack(onBack)}>Menu</button>
           <h1>Puzzles with AI</h1>
         </header>
         <div className="puzzle-intro-overlay">
@@ -1420,7 +1518,7 @@ function PuzzleScreen({ coachId, difficultyId, onBack }: { coachId: CoachId; dif
     return (
       <main className="game-screen">
         <header className="topbar">
-          <button onClick={onBack}>Menu</button>
+          <button onClick={() => clickBack(onBack)}>Menu</button>
           <h1>Puzzles with AI</h1>
           <div className="topbar-actions"><span>{score} pts</span></div>
         </header>
@@ -1430,7 +1528,7 @@ function PuzzleScreen({ coachId, difficultyId, onBack }: { coachId: CoachId; dif
             <h2>You finished every {getDifficulty(difficultyId).label} puzzle</h2>
             <p>You've solved all {totalForDifficulty} puzzles at this difficulty. Try a harder level from the menu, or reset to replay them.</p>
             <div className="puzzle-group-actions">
-              <button className="primary-action" onClick={onBack}>Back to menu</button>
+              <button className="primary-action" onClick={() => clickBack(onBack)}>Back to menu</button>
               <button className="ghost-action" onClick={resetProgress}>Reset progress</button>
             </div>
           </div>
@@ -1446,7 +1544,7 @@ function PuzzleScreen({ coachId, difficultyId, onBack }: { coachId: CoachId; dif
     return (
       <main className="game-screen">
         <header className="topbar">
-          <button onClick={onBack}>Menu</button>
+          <button onClick={() => clickBack(onBack)}>Menu</button>
           <h1>Puzzles with AI</h1>
           <div className="topbar-actions"><span>{score} pts</span></div>
         </header>
@@ -1475,6 +1573,8 @@ function PuzzleScreen({ coachId, difficultyId, onBack }: { coachId: CoachId; dif
   async function sendPuzzleChat() {
     const text = chatInput.trim();
     if (!text) return;
+    unlockUiAudio();
+    playUiSound('send');
     setChatInput('');
     const dynamicInfo = `Puzzle theme: ${puzzle.theme}. Side to move: ${puzzle.sideToMove}. Position FEN: ${puzzle.fen}.`;
     const spoken = await chessConvai.sendUserChat(
@@ -1489,21 +1589,28 @@ function PuzzleScreen({ coachId, difficultyId, onBack }: { coachId: CoachId; dif
   return (
     <main className="game-screen">
       <header className="topbar">
-        <button onClick={onBack}>Menu</button>
+        <button onClick={() => clickBack(onBack)}>Menu</button>
         <h1>{reviewMode ? 'Review Mode' : 'Puzzles'}</h1>
         <div className="topbar-actions">
           <span>{score} pts</span>
           {streak > 0 && <span>{streak} streak</span>}
           {!reviewMode && <span>{batchPos + 1}/{batchIds.length}</span>}
           {reviewMode && <span>{reviewPos + 1}/{reviewIds.length}</span>}
-          <span data-tooltip="Total progress for this difficulty">{completedIds.length}/{allForDifficulty.length}</span>
-          <button onClick={() => setChatOpen((o) => !o)}>Chat</button>
+          <Tooltip text="Total progress for this difficulty" placement="bottom">
+            <span>{completedIds.length}/{allForDifficulty.length}</span>
+          </Tooltip>
           <MicButton />
         </div>
       </header>
       <div className="training-layout">
         <div className="puzzle-left-col">
-          <CoachCard coach={coach} status={coach.name} lastLine={feedback || undefined} />
+          <CoachCard
+            coach={coach}
+            status={coach.name}
+            lastLine={feedback || undefined}
+            chatOpen={chatOpen}
+            onChatToggle={() => setChatOpen((o) => !o)}
+          />
           <div className="puzzle-theme-label">
             <span className="eyebrow">{reviewMode ? 'Review' : puzzle.theme}</span>
             <strong>{puzzle.title}</strong>
@@ -1528,27 +1635,16 @@ function PuzzleScreen({ coachId, difficultyId, onBack }: { coachId: CoachId; dif
         </section>
       </div>
 
-      {chatOpen && (
-        <section className="chat-drawer" aria-label={`Chat with ${coach.name}`}>
-          <div className="chat-drawer-header">
-            <strong>Ask {coach.name}</strong>
-            <MicButton className="chat-mic" />
-            <button onClick={() => setChatOpen(false)}>Minimize</button>
-          </div>
-          <textarea
-            value={chatInput}
-            onChange={(event) => setChatInput(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === 'Enter' && !event.shiftKey) {
-                event.preventDefault();
-                void sendPuzzleChat();
-              }
-            }}
-            placeholder="Ask about the puzzle..."
-          />
-          <button className="primary-action" onClick={() => void sendPuzzleChat()}>Send</button>
-        </section>
-      )}
+      <ChatDrawer
+        coachName={coach.name}
+        open={chatOpen}
+        onClose={() => setChatOpen(false)}
+        chatInput={chatInput}
+        onChatInputChange={setChatInput}
+        onSend={() => void sendPuzzleChat()}
+        placeholder="Ask about the puzzle..."
+        mic={<MicButton className="chat-mic" />}
+      />
     </main>
   );
 }
@@ -1572,7 +1668,7 @@ function MyGamesScreen({
   return (
     <main className="game-screen">
       <header className="topbar">
-        <button onClick={onBack}>Menu</button>
+        <button onClick={() => clickBack(onBack)}>Menu</button>
         <h1>My Games</h1>
         <div className="topbar-actions"><span>{sessions.length} saved</span></div>
       </header>
@@ -1613,11 +1709,19 @@ function ReplayViewer({ session }: { session: StoredGameSession }) {
         <h2>{session.result}</h2>
         <p>{session.analysis?.opening ?? 'Analysis pending or not generated yet.'}</p>
         <div className="replay-controls">
-          <button data-tooltip="Start" aria-label="Start" onClick={() => setPly(0)}><ChevronsLeft size={18} /></button>
-          <button data-tooltip="Previous" aria-label="Previous" onClick={() => setPly((value) => Math.max(0, value - 1))}><ChevronLeft size={18} /></button>
+          <Tooltip text="Start" placement="top">
+            <button aria-label="Start" onClick={() => { unlockUiAudio(); playUiSound('nav'); setPly(0); }}><ChevronsLeft size={18} /></button>
+          </Tooltip>
+          <Tooltip text="Previous" placement="top">
+            <button aria-label="Previous" onClick={() => { unlockUiAudio(); playUiSound('nav'); setPly((value) => Math.max(0, value - 1)); }}><ChevronLeft size={18} /></button>
+          </Tooltip>
           <span>{ply}/{session.moves.length}</span>
-          <button data-tooltip="Next" aria-label="Next" onClick={() => setPly((value) => Math.min(session.moves.length, value + 1))}><ChevronRight size={18} /></button>
-          <button data-tooltip="End" aria-label="End" onClick={() => setPly(session.moves.length)}><ChevronsRight size={18} /></button>
+          <Tooltip text="Next" placement="top">
+            <button aria-label="Next" onClick={() => { unlockUiAudio(); playUiSound('nav'); setPly((value) => Math.min(session.moves.length, value + 1)); }}><ChevronRight size={18} /></button>
+          </Tooltip>
+          <Tooltip text="End" placement="top">
+            <button aria-label="End" onClick={() => { unlockUiAudio(); playUiSound('nav'); setPly(session.moves.length); }}><ChevronsRight size={18} /></button>
+          </Tooltip>
         </div>
         <ol className="replay-moves invisible-scroll">
           {session.moves.map((move, index) => (
@@ -1641,28 +1745,50 @@ function CustomCoachCreator({ onBack }: { onBack: () => void }) {
   const [backstory, setBackstory] = useState('A patient chess coach who adapts to my level, explains ideas clearly, and gives progressive hints before revealing answers.');
   const [voice, setVoice] = useState('');
   const [language, setLanguage] = useState('en-US');
-  const [model, setModel] = useState(MODEL_OPTIONS[0].value);
+  const [model, setModel] = useState(DEFAULT_MODEL);
   const [temperature, setTemperature] = useState(0.45);
   const [status, setStatus] = useState('');
   const [createdId, setCreatedId] = useState('');
 
+  const compatibleVoices = useMemo(
+    () => filterVoicesForLanguage(voices, language),
+    [voices, language],
+  );
+
+  useEffect(() => {
+    if (hasConvaiApiKey()) void loadOptions();
+  }, []);
+
+  useEffect(() => {
+    if (!compatibleVoices.length) return;
+    if (!compatibleVoices.some((option) => option.value === voice)) {
+      setVoice(pickDefaultVoice(voices, language));
+    }
+  }, [compatibleVoices, language, voice, voices]);
+
   async function loadOptions() {
-    setStatus('Loading Convai voices and languages...');
     try {
       const [voiceOptions, languageOptions] = await Promise.all([fetchVoices(), fetchLanguages()]);
       setVoices(voiceOptions);
       setLanguages(languageOptions);
-      setVoice(voiceOptions[0]?.value ?? '');
-      setLanguage(languageOptions[0]?.code ?? 'en-US');
-      setStatus('Options loaded.');
+      const lang = languageOptions.find((option) => option.code === 'en-US')?.code
+        ?? languageOptions[0]?.code
+        ?? 'en-US';
+      setLanguage(lang);
+      setVoice(pickDefaultVoice(voiceOptions, lang));
+      setStatus('');
     } catch (err) {
       setStatus(err instanceof Error ? err.message : 'Failed to load Convai options.');
     }
   }
 
   async function createCoach() {
+    if (!hasConvaiApiKey()) {
+      setStatus('Add a Convai API key from the main menu first.');
+      return;
+    }
     if (!voice) {
-      setStatus('Choose a voice first.');
+      setStatus('Choose a voice first — use Load voices if the list is empty.');
       return;
     }
     setStatus('Creating character in Convai...');
@@ -1675,8 +1801,16 @@ function CustomCoachCreator({ onBack }: { onBack: () => void }) {
         model,
         temperature,
       });
+      const customId = `custom-${result.charID.slice(0, 8)}` as CoachId;
+      saveCustomCoach({
+        id: customId,
+        name: name.trim() || 'My Coach',
+        characterId: result.charID,
+        backstory,
+        createdAt: new Date().toISOString(),
+      });
       setCreatedId(result.charID);
-      setStatus('Coach created and updated. Copy the character ID into the coach config when ready.');
+      setStatus(`Coach created and added to the menu as "${name}". Select them from the coach list on the main screen.`);
     } catch (err) {
       setStatus(err instanceof Error ? err.message : 'Failed to create coach.');
     }
@@ -1685,21 +1819,23 @@ function CustomCoachCreator({ onBack }: { onBack: () => void }) {
   return (
     <main className="game-screen">
       <header className="topbar">
-        <button onClick={onBack}>Menu</button>
+        <button onClick={() => clickBack(onBack)}>Menu</button>
         <h1>Custom Coach</h1>
-        <div className="topbar-actions"><span>Local API demo</span></div>
+        <div className="topbar-actions" />
       </header>
       <section className="creator-layout">
         <div className="panel-card creator-form">
           <p className="eyebrow">Convai Core API</p>
           <h2>Create your coach</h2>
-          {!hasConvaiApiKey() && <p className="warning-text">Missing VITE_CONVAI_API_KEY. Add it locally before creating a coach.</p>}
+          {!hasConvaiApiKeyConfigured() && <p className="warning-text">Add a Convai API key from the main menu before creating a coach.</p>}
           <label>Name<input value={name} onChange={(event) => setName(event.target.value)} /></label>
           <label>Backstory<textarea value={backstory} onChange={(event) => setBackstory(event.target.value)} /></label>
           <div className="form-row">
             <label>Voice<select value={voice} onChange={(event) => setVoice(event.target.value)}>
-              <option value="">Load voices first</option>
-              {voices.map((option) => <option key={option.value} value={option.value}>{option.name} ({option.gender})</option>)}
+              <option value="">{compatibleVoices.length ? 'Choose a voice' : 'Loading voices…'}</option>
+              {compatibleVoices.map((option) => (
+                <option key={option.value} value={option.value}>{option.name} ({option.gender})</option>
+              ))}
             </select></label>
             <label>Language<select value={language} onChange={(event) => setLanguage(event.target.value)}>
               {languages.length === 0 && <option value="en-US">English</option>}
@@ -1713,7 +1849,6 @@ function CustomCoachCreator({ onBack }: { onBack: () => void }) {
             <label>Temperature<input type="number" min="0" max="1" step="0.05" value={temperature} onChange={(event) => setTemperature(Number(event.target.value))} /></label>
           </div>
           <div className="creator-actions">
-            <button className="ghost-action" onClick={() => void loadOptions()}>Load voices/languages</button>
             <button className="primary-action" onClick={() => void createCoach()}>Create coach</button>
           </div>
           {status && <p className="hint-text">{status}</p>}
@@ -1795,7 +1930,7 @@ function getStatus(game: Chess, coachName: string) {
   if (game.isStalemate()) return 'Stalemate. No legal move is available.';
   if (game.isDraw()) return 'Drawn position.';
   if (game.isCheck()) return 'Check. The king needs attention.';
-  return game.turn() === 'w' ? 'White to move. Choose a piece.' : `${coachName} is considering a reply.`;
+  return game.turn() === 'w' ? 'Your move — choose a piece.' : `${coachName} to move.`;
 }
 
 function resultLabel(game: Chess, coachName: string, resigned = false) {

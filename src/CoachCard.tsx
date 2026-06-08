@@ -4,6 +4,8 @@ import { useGLTF } from '@react-three/drei';
 import type { CoachConfig } from './coachConfig';
 import { debugLog } from './debugLog';
 import ReallusionCharacter from './ReallusionCharacter';
+import Tooltip from './Tooltip';
+import { playUiSound, unlockUiAudio } from './uiSounds';
 
 const DEFAULT_CHARACTER_ASSET_BASE = 'https://huggingface.co/sponge/Orca/resolve/main/';
 const CHARACTER_ASSET_BASE = import.meta.env.VITE_CHARACTER_ASSET_BASE_URL || DEFAULT_CHARACTER_ASSET_BASE;
@@ -17,7 +19,7 @@ const FRAMING_BY_ASSET: Record<string, {
   Vincent: { topInsetWorld: 0.035, portraitCropBias: 0.02, horizontalOffset: 0.07 },
   Tyler: { topInsetWorld: 0.035, portraitCropBias: 0.02, horizontalOffset: 0.07 },
   Cassandra: { topInsetWorld: 0.035, portraitCropBias: 0.02, horizontalOffset: 0 },
-  Danielle: { topInsetWorld: 0.035, portraitCropBias: 0.02, horizontalOffset: 0 },
+  Danielle: { topInsetWorld: 0.02, portraitCropBias: 0.01, horizontalOffset: 0 },
 };
 
 type Props = {
@@ -26,6 +28,8 @@ type Props = {
   lastLine?: string;
   onReady?: () => void;
   onAddToDataset?: () => void;
+  chatOpen?: boolean;
+  onChatToggle?: () => void;
 };
 
 type CharacterErrorBoundaryProps = {
@@ -57,7 +61,15 @@ class CharacterErrorBoundary extends Component<CharacterErrorBoundaryProps, { ha
   }
 }
 
-export default function CoachCard({ coach, status, lastLine, onReady, onAddToDataset }: Props) {
+export default function CoachCard({
+  coach,
+  status,
+  lastLine,
+  onReady,
+  onAddToDataset,
+  chatOpen = false,
+  onChatToggle,
+}: Props) {
   const modelUrl = assetUrl(coach.modelFile);
   const idleUrl = assetUrl(coach.idleFile);
   const framing = FRAMING_BY_ASSET[coach.assetName] ?? FRAMING_BY_ASSET.Danielle;
@@ -143,7 +155,7 @@ export default function CoachCard({ coach, status, lastLine, onReady, onAddToDat
           <CharacterErrorBoundary resetKey={characterResetKey} onError={handleCharacterError}>
             <Suspense fallback={null}>
               <ReallusionCharacter
-                coachId={coach.id}
+                coachId={coach.id as import('./coachConfig').CoachId}
                 assetName={coach.assetName}
                 charUrl={modelUrl}
                 animUrl={idleUrl}
@@ -172,17 +184,46 @@ export default function CoachCard({ coach, status, lastLine, onReady, onAddToDat
           <strong>{coach.name}</strong>
           <span>{status}</span>
         </div>
-        {onAddToDataset && (
-          <button
-            type="button"
-            className="add-dataset-btn"
-            onClick={onAddToDataset}
-            aria-label="Add to dataset"
-            data-tooltip="Log this dialogue exchange to dataset"
-          >
-            +
-          </button>
-        )}
+        <div className="caption-actions">
+          {onChatToggle && (
+            <Tooltip text="Ask your coach about the position" placement="top">
+              <button
+                type="button"
+                className={`coach-chat-btn${chatOpen ? ' is-open' : ''}`}
+                onClick={() => {
+                  unlockUiAudio();
+                  playUiSound('tap');
+                  onChatToggle();
+                }}
+                aria-label={chatOpen ? 'Close chat' : `Chat with ${coach.name}`}
+                aria-expanded={chatOpen}
+              >
+                <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+                  <path
+                    fill="currentColor"
+                    d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm0 14H5.2L4 17.2V4h16v12z"
+                  />
+                </svg>
+              </button>
+            </Tooltip>
+          )}
+          {onAddToDataset && (
+            <Tooltip text="Log this dialogue exchange to dataset" placement="top">
+              <button
+                type="button"
+                className="add-dataset-btn"
+                onClick={() => {
+                  unlockUiAudio();
+                  playUiSound('tap');
+                  onAddToDataset();
+                }}
+                aria-label="Add to dataset"
+              >
+                +
+              </button>
+            </Tooltip>
+          )}
+        </div>
       </div>
       <div ref={wrapRef} className="coach-line-wrap">
         {lastLine && <p ref={lineRef} className="coach-line">{lastLine}</p>}

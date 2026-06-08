@@ -8,10 +8,12 @@ import { applyCC4TeethMotion, decayCC4TeethMotion } from './cc4TeethMotion';
 import { debugLog } from './debugLog';
 
 const MATERIAL_TUNING = {
-  alphaTest: 0.35,
+  hairAlphaTest: 0.16,
   roughnessClamp: 0.92,
   envMapIntensity: 0.85,
 } as const;
+
+const HAIR_NAME_PATTERN = /hair|lash|brow|beard|scalp|fur/i;
 
 const TEETH_VISEME_BOOST = 1.35;
 
@@ -163,6 +165,12 @@ function decayMorphs(root: THREE.Object3D) {
   });
 }
 
+function isHairLikeMesh(mesh: THREE.Mesh, material: THREE.Material): boolean {
+  const meshName = mesh.name || '';
+  const materialName = material.name || '';
+  return HAIR_NAME_PATTERN.test(meshName) || HAIR_NAME_PATTERN.test(materialName) || Boolean((material as THREE.MeshStandardMaterial).transparent);
+}
+
 function tuneCharacterMaterials(root: THREE.Object3D) {
   root.traverse((child) => {
     const mesh = child as THREE.Mesh;
@@ -171,6 +179,7 @@ function tuneCharacterMaterials(root: THREE.Object3D) {
     materials.forEach((material) => {
       if (!material) return;
       const standard = material as THREE.MeshStandardMaterial;
+      const hairLike = isHairLikeMesh(mesh, material);
       if ('map' in standard && standard.map) {
         standard.map.colorSpace = THREE.SRGBColorSpace;
         standard.map.anisotropy = 8;
@@ -181,9 +190,15 @@ function tuneCharacterMaterials(root: THREE.Object3D) {
       if ('metalnessMap' in standard && standard.metalnessMap) standard.metalnessMap.anisotropy = 8;
       if ('envMapIntensity' in standard) standard.envMapIntensity = MATERIAL_TUNING.envMapIntensity;
       if ('roughness' in standard) standard.roughness = Math.min(standard.roughness, MATERIAL_TUNING.roughnessClamp);
-      if (standard.transparent || /hair|lash|brow|beard/i.test(material.name)) {
-        standard.alphaTest = MATERIAL_TUNING.alphaTest;
-        standard.depthWrite = true;
+      if (hairLike) {
+        standard.transparent = true;
+        standard.alphaTest = MATERIAL_TUNING.hairAlphaTest;
+        standard.depthWrite = false;
+        standard.depthTest = true;
+        standard.side = THREE.DoubleSide;
+        mesh.renderOrder = 2;
+      } else if (/skin|head|face|scalp/i.test(mesh.name) || /skin|head|face/i.test(material.name)) {
+        mesh.renderOrder = 1;
       }
       material.needsUpdate = true;
     });

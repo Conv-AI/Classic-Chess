@@ -1,4 +1,5 @@
-const API_KEY = import.meta.env.VITE_CONVAI_API_KEY as string;
+import { getConvaiApiKey } from './convaiApiKey';
+
 const API_BASE = 'https://api.convai.com';
 
 export type VoiceOption = {
@@ -27,24 +28,27 @@ export type CreateCoachResult = {
   charID: string;
 };
 
-const headers = {
-  'CONVAI-API-KEY': API_KEY,
-  'Content-Type': 'application/json',
-};
+function apiHeaders() {
+  return {
+    'CONVAI-API-KEY': getConvaiApiKey(),
+    'Content-Type': 'application/json',
+  };
+}
 
+/** Model codes from Convai Core AI Settings API (docs.convai.com). */
 export const MODEL_OPTIONS = [
+  { label: 'Gemini 2.5 Flash Lite (recommended)', value: 'gemini-2.5-flash-lite' },
+  { label: 'Gemini 2.5 Flash', value: 'gemini-2.5-flash' },
+  { label: 'Gemini 2.0 Flash', value: 'gemini-2.0-flash' },
   { label: 'GPT-4.1 mini', value: 'gpt-4.1-mini' },
   { label: 'GPT-4.1', value: 'gpt-4.1' },
   { label: 'GPT-4.1 nano', value: 'gpt-4.1-nano' },
   { label: 'GPT-4o mini', value: 'gpt-4o-mini' },
   { label: 'GPT-4o', value: 'gpt-4o' },
-  { label: 'Claude Opus 4.1', value: 'claude-opus-4.1' },
-  { label: 'Claude Opus 4', value: 'claude-opus-4' },
   { label: 'Claude 4 Sonnet', value: 'claude-4-sonnet' },
   { label: 'Claude 3.7 Sonnet', value: 'claude-3-7-sonnet' },
-  { label: 'Gemini 2.5 Flash', value: 'gemini-2.5-flash' },
-  { label: 'Gemini 2.5 Flash Lite', value: 'gemini-2.5-flash-lite' },
-  { label: 'Gemini 2.0 Flash', value: 'gemini-2.0-flash' },
+  { label: 'Claude Opus 4.1', value: 'claude-opus-4.1' },
+  { label: 'Claude Opus 4', value: 'claude-opus-4' },
   { label: 'Gemma 3n e4b', value: 'gemma-3n-e4b' },
   { label: 'Gemma 3n e2b', value: 'gemma-3n-e2b' },
   { label: 'Llama 4 Maverick', value: 'llama-4-maverick' },
@@ -52,23 +56,52 @@ export const MODEL_OPTIONS = [
   { label: 'Llama 3.3 70B', value: 'llama-3-70B' },
 ];
 
+export const DEFAULT_MODEL = 'gemini-2.5-flash-lite';
+
+function languageMatches(voiceLang: string, selected: string): boolean {
+  const v = voiceLang.toLowerCase();
+  const s = selected.toLowerCase();
+  if (v === s) return true;
+  const vBase = v.split('-')[0];
+  const sBase = s.split('-')[0];
+  return vBase === sBase;
+}
+
+/** Voices whose lang_codes include the selected language (or same base locale). */
+export function filterVoicesForLanguage(voices: VoiceOption[], languageCode: string): VoiceOption[] {
+  if (!languageCode) return voices;
+  const compatible = voices.filter((voice) =>
+    voice.languages.some((code) => languageMatches(code, languageCode)),
+  );
+  return compatible.length > 0 ? compatible : voices;
+}
+
+export function pickDefaultVoice(voices: VoiceOption[], languageCode: string): string {
+  const compatible = filterVoicesForLanguage(voices, languageCode);
+  const english = compatible.find((v) =>
+    v.languages.some((code) => code.toLowerCase().startsWith('en')),
+  );
+  return english?.value ?? compatible[0]?.value ?? voices[0]?.value ?? '';
+}
+
 export function hasConvaiApiKey(): boolean {
-  return Boolean(API_KEY);
+  return Boolean(getConvaiApiKey());
 }
 
 export async function fetchVoices(): Promise<VoiceOption[]> {
-  const response = await fetch(`${API_BASE}/tts/get_available_voices`, { headers });
+  const response = await fetch(`${API_BASE}/tts/get_available_voices`, { headers: apiHeaders() });
   if (!response.ok) throw new Error(`Voice list failed: ${response.status}`);
   return normalizeVoices(await response.json());
 }
 
 export async function fetchLanguages(): Promise<LanguageOption[]> {
-  const response = await fetch(`${API_BASE}/tts/get_available_languages`, { headers });
+  const response = await fetch(`${API_BASE}/tts/get_available_languages`, { headers: apiHeaders() });
   if (!response.ok) throw new Error(`Language list failed: ${response.status}`);
   return normalizeLanguages(await response.json());
 }
 
 export async function createCustomCoach(input: CreateCoachInput): Promise<CreateCoachResult> {
+  const headers = apiHeaders();
   const createResponse = await fetch(`${API_BASE}/character/create`, {
     method: 'POST',
     headers,
@@ -78,7 +111,10 @@ export async function createCustomCoach(input: CreateCoachInput): Promise<Create
       backstory: input.backstory,
     }),
   });
-  if (!createResponse.ok) throw new Error(`Character create failed: ${createResponse.status}`);
+  if (!createResponse.ok) {
+    const body = await createResponse.text();
+    throw new Error(`Character create failed: ${createResponse.status} ${body.slice(0, 120)}`);
+  }
 
   const created = await createResponse.json();
   const charID = created.charID || created.character_id || created.id;
@@ -94,7 +130,10 @@ export async function createCustomCoach(input: CreateCoachInput): Promise<Create
       languageCodes: input.languageCodes,
     }),
   });
-  if (!updateResponse.ok) throw new Error(`Character update failed: ${updateResponse.status}`);
+  if (!updateResponse.ok) {
+    const body = await updateResponse.text();
+    throw new Error(`Character update failed: ${updateResponse.status} ${body.slice(0, 120)}`);
+  }
 
   return { charID };
 }

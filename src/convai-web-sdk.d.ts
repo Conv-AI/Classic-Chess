@@ -1,8 +1,9 @@
 declare module '@convai/web-sdk/vanilla' {
   export class ConvaiClient {
     constructor(config: any);
-    connect(): Promise<void>;
+    connect(config?: any): Promise<void>;
     disconnect(): Promise<void>;
+    resetSession(): void;
     sendUserTextMessage(text: string): void;
     sendInterruptMessage?(): void;
     updateDynamicInfo(dynamicInfo: string): void;
@@ -14,6 +15,14 @@ declare module '@convai/web-sdk/vanilla' {
     audioControls: {
       enableAudio(): Promise<void>;
       disableAudio(): Promise<void>;
+    };
+    videoControls?: {
+      enableVideo(): Promise<void>;
+      disableVideo(): Promise<void>;
+      toggleVideo(): Promise<void>;
+    };
+    screenShareControls?: {
+      toggleScreenShare(): Promise<void>;
     };
   }
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { normalizeLanguages, normalizeVoices } from './convaiCoreApi';
+import { filterVoicesForLanguage, normalizeLanguages, normalizeVoices } from './convaiCoreApi';
 
 describe('Convai Core API helpers', () => {
   it('normalizes nested voice list responses', () => {
@@ -25,6 +25,31 @@ describe('Convai Core API helpers', () => {
         sampleLink: 'https://example.com/sample.mp3',
       },
     ]);
+  });
+
+  it('filters voices by selected language', () => {
+    const voices = normalizeVoices({
+      Public: [
+        {
+          'Mexican Voice': {
+            voice_value: 'mx_voice',
+            lang_codes: ['es-MX'],
+            gender: 'FEMALE',
+          },
+        },
+        {
+          'US Voice': {
+            voice_value: 'us_voice',
+            lang_codes: ['en-US'],
+            gender: 'FEMALE',
+          },
+        },
+      ],
+    });
+
+    const enVoices = filterVoicesForLanguage(voices, 'en-US');
+    expect(enVoices).toHaveLength(1);
+    expect(enVoices[0]?.value).toBe('us_voice');
   });
 
   it('normalizes nested language list responses', () => {
