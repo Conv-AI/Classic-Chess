@@ -575,7 +575,7 @@ function ChessGame({
 
     if (coachingControlMode === 'coach') {
       debugLog('makeCoachMove', `[coach-decides] dynamic context auto-LLM turn moveNo=${fullMoveNo} fen="${next.fen()}"`);
-      const spoken = await chessConvai.runCoachTurn(coach, dynamicInfo, { runLlm: 'auto', waitForFullSpeech: true, preflightSilence: false, maxWaitMs: 15000 });
+      const spoken = await chessConvai.runCoachTurn(coach, dynamicInfo, { runLlm: 'auto', waitForFullSpeech: true, preflightSilence: false, maxWaitMs: 18000 });
 
       if (DATASET_TOOLS_ENABLED) {
         setLastExchange({
@@ -601,7 +601,7 @@ function ChessGame({
       const suppression = applyRepeatSuppression(speech, spokenReasonsRef.current, fullMoveNo);
       debugLog('makeCoachMove', `[game-decides] planned="${planned?.san ?? 'none'}" lastMove="${playerMove?.san ?? 'none'}" speech=${suppression.shouldSpeak ? 'yes' : 'no'} reason=${speech.reason}${suppression.suppressed ? ' [suppressed: ' + suppression.suppressedReasons.join(',') + ']' : ''} phase=${speech.phase} moveNo=${fullMoveNo} fen="${next.fen()}"`);
       if (suppression.shouldSpeak) {
-        const spoken = await chessConvai.runCoachTurn(coach, dynamicInfo, { runLlm: 'true', waitForFullSpeech: true, preflightSilence: false, maxWaitMs: 15000 });
+        const spoken = await chessConvai.runCoachTurn(coach, dynamicInfo, { runLlm: 'true', waitForFullSpeech: true, preflightSilence: false, maxWaitMs: 18000 });
 
         if (DATASET_TOOLS_ENABLED) {
           setLastExchange({

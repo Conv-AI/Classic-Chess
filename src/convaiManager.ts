@@ -599,6 +599,7 @@ class ChessConvaiManager {
     let audioQuietMs = sawSpeechActivity ? 0 : 0;
     let lastText = initialText;
     let textStableMs = 0;
+    let lastPollLogAt = 0;
 
     while (Date.now() - start < maxWaitMs) {
       if (this.speechWaitGeneration !== waitGeneration) {
@@ -608,6 +609,15 @@ class ChessConvaiManager {
 
       const text = this.getBestResponseText(conn);
       const audioActive = this.isCoachAudioActive(conn);
+
+      const now = Date.now();
+      if (now - lastPollLogAt >= 500) {
+        lastPollLogAt = now;
+        debugLog(
+          'Convai',
+          `[${coach.name}] speech-wait poll: isSpeaking=${conn.isSpeaking} audio=${this.isCoachAudioPlaying()} lipsync=${conn.lipsyncActive} sawActivity=${sawSpeechActivity} audioQuietMs=${audioQuietMs} textStableMs=${textStableMs} elapsed=${now - start}`,
+        );
+      }
 
       if (audioActive || conn.lipsyncActive) {
         sawSpeechActivity = true;
@@ -657,6 +667,17 @@ class ChessConvaiManager {
       // Fallback when SDK/audio signals are unreliable: full estimated duration since last FINAL.
       if (text.trim() && textSettled && estimateComplete && audioQuietMs >= 250) {
         this.markSpeechEnded(conn, coach.name, `TTS estimate complete (${this.speechElapsedMs(conn, text)}ms)`);
+        return;
+      }
+
+      // Last-resort fallback: the SDK never reported any audio/lipsync activity for this turn
+      // (isSpeaking stuck false, no playable <audio>, no blendshapes — the historical too-slow
+      // bug). Rather than hang until the hard timeout, release once the FINAL text has been
+      // stable and the full estimated speech duration has elapsed since it arrived: the audio
+      // either already played undetected or never will. The word-count estimate (~143 wpm) is
+      // deliberately on the slow side, so this still over-waits rather than cutting speech off.
+      if (text.trim() && textSettled && !sawSpeechActivity && estimateComplete) {
+        this.markSpeechEnded(conn, coach.name, `TTS estimate complete, no activity detected (${this.speechElapsedMs(conn, text)}ms)`);
         return;
       }
 
@@ -801,7 +822,7 @@ class ChessConvaiManager {
     const turnStart = Date.now();
     const remainingBudget = () => Math.max(0, turnBudgetMs - (Date.now() - turnStart));
     const textBudgetMs = requireFullSpeech
-      ? Math.min(6000, remainingBudget())
+      ? Math.min(10000, remainingBudget())
       : remainingBudget();
 
     const isAutoContextTurn = runLlm === 'auto';
@@ -936,8 +957,15 @@ class ChessConvaiManager {
       if (conn.isSpeaking) everSpoke = true;
     }
 
+    // Only treat "no text yet" as a silent abstain on fast turns. When the caller must wait
+    // for the full spoken line (coach moves: auto + requireFullSpeech), an empty buffer at
+    // this point usually means the LLM response is still in flight — the transcript and TTS
+    // routinely arrive ~7-8s after the context push. Abstaining here is exactly what made the
+    // coach move before her line started. Genuine silence is signalled by llmNoResponse /
+    // responseSuppressed, which waitForFinalText below honours as an immediate exit.
     if (
       isAutoContextTurn &&
+      !requireFullSpeech &&
       !conn.lastEmittedText &&
       !conn.streamBuffer &&
       !conn.longestResponseText &&
