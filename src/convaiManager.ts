@@ -1,5 +1,5 @@
 import { buildCoachInstruction } from './chessAi';
-import { isBoardVisionEnabled, publishBoardVisionTrack } from './boardVision';
+import { isBoardVisionEnabled, publishBoardVisionTrack, type BoardVisionSession } from './boardVision';
 import { getConvaiApiKey } from './convaiApiKey';
 import { COACHES, type CoachConfig, type CoachId, type DifficultyConfig } from './coachConfig';
 import { debugLog } from './debugLog';
@@ -47,7 +47,7 @@ type CoachConnection = {
   lastSpeechEndedAt: number;
   staticPolicy: string;
   endUserId: string;
-  boardVisionPublished: boolean;
+  boardVision: BoardVisionSession | null;
 };
 
 function createConnection(coach: CoachConfig): CoachConnection {
@@ -81,7 +81,7 @@ function createConnection(coach: CoachConfig): CoachConnection {
     lastSpeechEndedAt: 0,
     staticPolicy: '',
     endUserId: '',
-    boardVisionPublished: false,
+    boardVision: null,
   };
 }
 
@@ -148,6 +148,9 @@ class ChessConvaiManager {
       } else {
         if (options.waitForBotReady) await this.waitForReady(conn, options.readyWaitMs ?? 3000);
         if (conn.connected && conn.staticPolicy) await this.seedStaticCoachPolicy(coach, conn.staticPolicy);
+        if (conn.connected && isBoardVisionEnabled() && !conn.boardVision && conn.client) {
+          conn.boardVision = await publishBoardVisionTrack(conn.client);
+        }
         this.emitStatus();
         return;
       }
@@ -311,9 +314,8 @@ class ChessConvaiManager {
         debugLog('Convai', `[${coach.name}] AudioRenderer failed:`, err);
       }
 
-      if (isBoardVisionEnabled() && !conn.boardVisionPublished) {
-        const published = await publishBoardVisionTrack(client);
-        conn.boardVisionPublished = published;
+      if (isBoardVisionEnabled() && !conn.boardVision) {
+        conn.boardVision = await publishBoardVisionTrack(client);
       }
 
       setTimeout(() => {
@@ -465,6 +467,18 @@ class ChessConvaiManager {
     await this.pushDynamicContext(coach, dynamicInfo, 'false');
   }
 
+  refreshBoardVision(coach: CoachConfig, fen?: string): void {
+    if (!isBoardVisionEnabled()) return;
+    const conn = this.pool.get(coach.id);
+    if (!conn?.boardVision) return;
+    const refreshed = fen?.trim()
+      ? conn.boardVision.updateFromFen(fen)
+      : conn.boardVision.refresh();
+    if (!refreshed) {
+      debugLog('BoardVision', `[${coach.name}] Live board refresh skipped`);
+    }
+  }
+
   async beginNewGame(
     coach: CoachConfig,
     difficulty: DifficultyConfig,
@@ -572,8 +586,8 @@ class ChessConvaiManager {
     return false;
   }
 
-  private isCoachAudioActive(conn: CoachConnection): boolean {
-    return conn.isSpeaking || this.isCoachAudioPlaying();
+  private isCoachSpeechSignalActive(conn: CoachConnection): boolean {
+    return conn.isSpeaking || conn.lipsyncActive;
   }
 
   private markSpeechEnded(conn: CoachConnection, coachName: string, reason: string): void {
@@ -589,14 +603,14 @@ class ChessConvaiManager {
     if (!conn) return;
 
     const initialText = this.getBestResponseText(conn);
-    if (!initialText.trim() && !this.isCoachAudioActive(conn)) return;
+    if (!initialText.trim() && !this.isCoachSpeechSignalActive(conn)) return;
 
     this.ensureTtsExpectedUntil(conn);
 
     const waitGeneration = this.speechWaitGeneration;
     const start = Date.now();
-    let sawSpeechActivity = conn.isSpeaking || conn.lipsyncActive || this.isCoachAudioPlaying();
-    let audioQuietMs = sawSpeechActivity ? 0 : 0;
+    let sawSpeechActivity = this.isCoachSpeechSignalActive(conn);
+    let signalQuietMs = sawSpeechActivity ? 0 : 0;
     let lastText = initialText;
     let textStableMs = 0;
     let lastPollLogAt = 0;
@@ -608,25 +622,26 @@ class ChessConvaiManager {
       }
 
       const text = this.getBestResponseText(conn);
-      const audioActive = this.isCoachAudioActive(conn);
+      const speechSignalActive = this.isCoachSpeechSignalActive(conn);
+      const audioElementPlaying = this.isCoachAudioPlaying();
 
       const now = Date.now();
       if (now - lastPollLogAt >= 500) {
         lastPollLogAt = now;
         debugLog(
           'Convai',
-          `[${coach.name}] speech-wait poll: isSpeaking=${conn.isSpeaking} audio=${this.isCoachAudioPlaying()} lipsync=${conn.lipsyncActive} sawActivity=${sawSpeechActivity} audioQuietMs=${audioQuietMs} textStableMs=${textStableMs} elapsed=${now - start}`,
+          `[${coach.name}] speech-wait poll: isSpeaking=${conn.isSpeaking} audioEl=${audioElementPlaying} lipsync=${conn.lipsyncActive} sawActivity=${sawSpeechActivity} signalQuietMs=${signalQuietMs} textStableMs=${textStableMs} elapsed=${now - start}`,
         );
       }
 
-      if (audioActive || conn.lipsyncActive) {
+      if (speechSignalActive) {
         sawSpeechActivity = true;
       }
 
-      if (audioActive) {
-        audioQuietMs = 0;
+      if (speechSignalActive) {
+        signalQuietMs = 0;
       } else if (sawSpeechActivity) {
-        audioQuietMs += 50;
+        signalQuietMs += 50;
       }
 
       if (text === lastText) {
@@ -641,31 +656,33 @@ class ChessConvaiManager {
       }
 
       const textSettled = textStableMs >= 400;
-      const audioQuiet = audioQuietMs >= 350;
+      const signalQuiet = signalQuietMs >= 250;
       const estimateComplete = this.isSpeechEstimateComplete(conn, text);
       const sdkReportedEnd = conn.lastSpeechEndedAt >= start && textSettled;
       const lipsyncEnded = sawSpeechActivity && this.isLipsyncConversationEnded(conn);
 
-      // Speech clearly started and audio has gone quiet.
-      if (text.trim() && textSettled && sawSpeechActivity && audioQuiet) {
-        this.markSpeechEnded(conn, coach.name, `audio quiet ${audioQuietMs}ms after speech activity`);
+      // Speech clearly started and the SDK/lipsync signals are now quiet. We do not
+      // gate this on hidden <audio> elements because LiveKit audio elements can remain
+      // "playing" while silent, which made coach moves wait until the hard timeout.
+      if (text.trim() && textSettled && sawSpeechActivity && signalQuiet) {
+        this.markSpeechEnded(conn, coach.name, `speech signal quiet ${signalQuietMs}ms after activity`);
         return;
       }
 
       // Blendshape queue reports playback ended after we saw activity.
-      if (text.trim() && textSettled && lipsyncEnded && audioQuietMs >= 200) {
+      if (text.trim() && textSettled && lipsyncEnded && signalQuietMs >= 200) {
         this.markSpeechEnded(conn, coach.name, 'blendshape conversation ended');
         return;
       }
 
       // SDK reported end after speech activity.
-      if (sdkReportedEnd && sawSpeechActivity && audioQuiet) {
+      if (sdkReportedEnd && sawSpeechActivity && signalQuiet) {
         this.markSpeechEnded(conn, coach.name, 'SDK end signal');
         return;
       }
 
       // Fallback when SDK/audio signals are unreliable: full estimated duration since last FINAL.
-      if (text.trim() && textSettled && estimateComplete && audioQuietMs >= 250) {
+      if (text.trim() && textSettled && estimateComplete && signalQuietMs >= 250) {
         this.markSpeechEnded(conn, coach.name, `TTS estimate complete (${this.speechElapsedMs(conn, text)}ms)`);
         return;
       }
@@ -1224,6 +1241,10 @@ class ChessConvaiManager {
       try { conn.audioRenderer.destroy(); } catch {}
       conn.audioRenderer = null;
     }
+    if (conn.boardVision) {
+      try { conn.boardVision.stop(); } catch {}
+      conn.boardVision = null;
+    }
     if (conn.client) {
       try { await conn.client.disconnect(); } catch {}
       conn.client = null;
@@ -1232,7 +1253,6 @@ class ChessConvaiManager {
     conn.botReady = false;
     conn.connectedAt = 0;
     conn.isSpeaking = false;
-    conn.boardVisionPublished = false;
     this.resetLipsyncState(conn);
     conn.streamBuffer = '';
     conn.lastEmittedText = '';

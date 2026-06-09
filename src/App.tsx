@@ -554,6 +554,7 @@ function ChessGame({
     debugLog('App', `Player move: ${move.san} (${from}→${to}) moveNo=${Number(next.fen().split(' ')[5])} fen="${next.fen()}"`);
 
     setGame(next);
+    chessConvai.refreshBoardVision(coach, next.fen());
     setHistory((moves) => [...moves, record]);
     setSelected(null);
     setHintText('');
@@ -575,6 +576,7 @@ function ChessGame({
     const dynamicInfo = buildDynamicCoachInfo(next, planned, playerMove, coach, difficulty, moveHistory, recentTopics);
     const staticPolicy = buildCoachInstruction(coach, difficulty, 'move');
     await chessConvai.seedStaticCoachPolicy(coach, staticPolicy);
+    chessConvai.refreshBoardVision(coach, next.fen());
 
     if (coachingControlMode === 'coach') {
       debugLog('makeCoachMove', `[coach-decides] dynamic context auto-LLM turn moveNo=${fullMoveNo} fen="${next.fen()}"`);
@@ -636,6 +638,7 @@ function ChessGame({
         const coachRecord = toRecord(applied, coach.name, fenBefore, next.fen());
         debugLog('App', `Coach move applied: ${applied.san} (${applied.from}→${applied.to}) moveNo=${Number(next.fen().split(' ')[5])} fen="${next.fen()}"`);
         setGame(next);
+        chessConvai.refreshBoardVision(coach, next.fen());
         setHistory((moves) => [...moves, coachRecord]);
         if (coachingControlMode === 'game') {
           const afterReplyInfo = buildDynamicCoachInfo(next, null, applied, coach, difficulty, [...moveHistory, coachRecord], recentTopics);

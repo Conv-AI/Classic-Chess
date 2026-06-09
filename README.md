@@ -120,7 +120,7 @@ Opening greetings use varied casual lines from `buildWelcomeDynamicInfo()` — n
 
 `debugLog(scope, message)` → console + batched POST to `/api/log` → `debug.log` in the project root.
 
-Useful lines: `[Convai] BOT READY`, `FINAL`, `Coach move applied`, `Published board video track`, `coachingControlMode -> coach|game`.
+Useful lines: `[Convai] BOT READY`, `FINAL`, `Coach move applied`, `Published live board video track`, `coachingControlMode -> coach|game`.
 
 Copy-log button in the game topbar copies the in-browser log buffer.
 
