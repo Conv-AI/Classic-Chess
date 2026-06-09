@@ -11,47 +11,68 @@ const OPENINGS: Array<{ prefix: string[]; name: string }> = [
   { prefix: ['e4', 'c6'], name: 'Caro-Kann Defense' },
 ];
 
-export type BestMoveProvider = (fen: string) => Promise<string | null>;
+export type PositionEval = {
+  // The engine's preferred move in SAN, used to spot when the player matched it.
+  bestSan: string | null;
+  // White-relative centipawn evaluation (positive favors White).
+  whiteCp: number;
+};
+
+export type EvalProvider = (fen: string) => Promise<PositionEval | null>;
+
+type MoveLabel = 'Good' | 'Inaccuracy' | 'Mistake' | 'Blunder';
 
 export async function analyzeGame(
   moves: MoveSnapshot[],
   finalFen: string,
-  bestMoveProvider: BestMoveProvider,
+  evalProvider: EvalProvider,
 ): Promise<AnalysisSummary> {
   const opening = identifyOpening(moves.map((move) => move.san));
   const userMoves = moves.filter((move) => move.color === 'w');
-  const sample = userMoves.slice(0, 18);
-  let matches = 0;
+  const sample = userMoves.slice(0, 20);
   let inaccuracies = 0;
   let mistakes = 0;
   let blunders = 0;
+  const accuracies: number[] = [];
   const keyMoments: KeyMoment[] = [];
 
   for (const move of sample) {
-    const best = await bestMoveProvider(move.fenBefore);
-    if (!best) continue;
-    if (normalizeSan(best) === normalizeSan(move.san)) {
-      matches++;
-      continue;
+    const before = await evalProvider(move.fenBefore);
+    if (!before) continue;
+
+    const playedBest = before.bestSan ? normalizeSan(before.bestSan) === normalizeSan(move.san) : false;
+    // If the player chose the engine's move, the position holds its value. Otherwise
+    // evaluate the position the player actually reached to measure what they gave up.
+    let whiteCpAfter = before.whiteCp;
+    if (!playedBest) {
+      const after = await evalProvider(move.fenAfter);
+      if (after) whiteCpAfter = after.whiteCp;
     }
 
-    const label = classifyMove(move, best);
+    // Accuracy is driven by how far the move dropped White's winning chances.
+    const winBefore = winPercent(before.whiteCp);
+    const winAfter = winPercent(whiteCpAfter);
+    const winDrop = Math.max(0, winBefore - winAfter);
+    accuracies.push(moveAccuracy(winDrop));
+
+    const label = playedBest ? 'Good' : classifyByWinDrop(winDrop);
     if (label === 'Blunder') blunders++;
     else if (label === 'Mistake') mistakes++;
-    else inaccuracies++;
+    else if (label === 'Inaccuracy') inaccuracies++;
 
-    if (keyMoments.length < 5) {
+    if (label !== 'Good' && keyMoments.length < 5) {
       keyMoments.push({
         moveNumber: Math.ceil((moves.indexOf(move) + 1) / 2),
         label,
-        description: describeMoment(move, best, label),
-        bestMove: best,
+        description: describeMoment(move, before.bestSan, label),
+        bestMove: before.bestSan ?? undefined,
       });
     }
   }
 
-  const reviewed = Math.max(1, sample.length);
-  const whiteAccuracy = clampAccuracy(Math.round(100 - ((inaccuracies * 8 + mistakes * 16 + blunders * 28) / reviewed)));
+  const whiteAccuracy = accuracies.length
+    ? clampAccuracy(Math.round(overallAccuracy(accuracies)))
+    : 75;
   const blackAccuracy = estimateBlackAccuracy(moves, finalFen);
 
   return {
@@ -64,6 +85,34 @@ export async function analyzeGame(
     keyMoments: keyMoments.length ? keyMoments : fallbackMoments(moves),
     tips: buildTips({ inaccuracies, mistakes, blunders }, moves),
   };
+}
+
+// Convert a white-relative centipawn score to White's expected win percentage
+// (0-100). This is the logistic model used by Lichess/chess.com accuracy.
+function winPercent(cp: number): number {
+  const c = Math.max(-1000, Math.min(1000, cp));
+  return 50 + 50 * (2 / (1 + Math.exp(-0.00368208 * c)) - 1);
+}
+
+// Per-move accuracy (0-100) as a function of the win-percentage lost by the move.
+function moveAccuracy(winDrop: number): number {
+  const acc = 103.1668 * Math.exp(-0.04354 * winDrop) - 3.1669;
+  return Math.max(0, Math.min(100, acc));
+}
+
+// Blend the arithmetic mean with the harmonic mean so that a few bad moves pull
+// the overall score down meaningfully instead of being averaged away.
+function overallAccuracy(accs: number[]): number {
+  const mean = accs.reduce((sum, a) => sum + a, 0) / accs.length;
+  const harmonic = accs.length / accs.reduce((sum, a) => sum + 1 / Math.max(1, a), 0);
+  return (mean + harmonic) / 2;
+}
+
+function classifyByWinDrop(winDrop: number): MoveLabel {
+  if (winDrop >= 30) return 'Blunder';
+  if (winDrop >= 15) return 'Mistake';
+  if (winDrop >= 8) return 'Inaccuracy';
+  return 'Good';
 }
 
 export function identifyOpening(sans: string[]): string {
@@ -79,18 +128,13 @@ function normalizeSan(san: string): string {
   return san.replace(/[+#?!]/g, '');
 }
 
-function classifyMove(move: MoveSnapshot, best: string): 'Inaccuracy' | 'Mistake' | 'Blunder' {
-  if (move.captured && !best.includes('x')) return 'Mistake';
-  if (/^[KQRBN]?x/.test(best) && !move.san.includes('x')) return 'Mistake';
-  if (best.includes('#')) return 'Blunder';
-  if (best.includes('+') && !move.san.includes('+')) return 'Mistake';
-  return 'Inaccuracy';
-}
-
-function describeMoment(move: MoveSnapshot, best: string, label: string): string {
-  if (label === 'Blunder') return `${move.san} missed a forcing continuation. Stockfish preferred ${best}.`;
-  if (label === 'Mistake') return `${move.san} gave up a clearer chance. A stronger candidate was ${best}.`;
-  return `${move.san} was playable, but ${best} kept more pressure.`;
+function describeMoment(move: MoveSnapshot, best: string | null, label: string): string {
+  const betterClause = best ? ` Stockfish preferred ${best}.` : '';
+  const candidateClause = best ? ` A stronger candidate was ${best}.` : '';
+  const pressureClause = best ? ` ${best} kept more pressure.` : '';
+  if (label === 'Blunder') return `${move.san} dropped a large chunk of your advantage.${betterClause}`;
+  if (label === 'Mistake') return `${move.san} gave up a clearer chance.${candidateClause}`;
+  return `${move.san} was playable, but${pressureClause || ' there was more to be had.'}`;
 }
 
 function fallbackMoments(moves: MoveSnapshot[]): KeyMoment[] {
@@ -127,5 +171,5 @@ function estimateBlackAccuracy(moves: MoveSnapshot[], finalFen: string): number 
 }
 
 function clampAccuracy(value: number): number {
-  return Math.max(35, Math.min(99, value));
+  return Math.max(15, Math.min(99, value));
 }

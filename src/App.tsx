@@ -444,8 +444,11 @@ function ChessGame({
     analysisStartedRef.current = true;
     setAnalysisPending(true);
     void analyzeGame(history, game.fen(), async (fen) => {
-      const best = await stockfishEngine.bestMove(fen, 380, Math.max(14, difficulty.stockfishSkill));
-      return best?.san ?? null;
+      // Analysis grades at full engine strength regardless of the level the game
+      // was played at, capturing the evaluation so accuracy reflects how much each
+      // move changed the position rather than just whether it matched the top move.
+      const result = await stockfishEngine.analyzePosition(fen, 300, 20);
+      return { bestSan: result.bestMove?.san ?? null, whiteCp: result.whiteCp };
     }).then((summary) => {
       setAnalysis(summary);
       setAnalysisPending(false);

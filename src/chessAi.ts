@@ -50,6 +50,17 @@ function evaluate(game: Chess) {
   return materialScore(game) + positionalScore(game) + mobility;
 }
 
+// White-relative static evaluation of a FEN (positive favors White). Used as a
+// fallback for post-game accuracy analysis when the Stockfish worker is
+// unavailable or does not report a score.
+export function evaluateFen(fen: string): number {
+  try {
+    return evaluate(new Chess(fen));
+  } catch {
+    return 0;
+  }
+}
+
 function orderMoves(moves: Move[]) {
   return [...moves].sort((a, b) => movePriority(b) - movePriority(a));
 }

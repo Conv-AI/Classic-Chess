@@ -1,9 +1,26 @@
 import { Chess, type Move } from 'chess.js';
-import { chooseDanielleMove } from './chessAi';
+import { chooseDanielleMove, evaluateFen } from './chessAi';
+
+// Centipawn magnitude used to represent a forced mate when folding the engine's
+// "score mate N" into a single white-relative centipawn number.
+const MATE_CP = 10000;
+
+type SearchResult = {
+  bestUci: string | null;
+  scoreCp: number | null; // side-to-move relative
+  mate: number | null; // side-to-move relative (positive = side to move mates)
+};
 
 type PendingSearch = {
-  resolve: (uciMove: string | null) => void;
+  resolve: (result: SearchResult) => void;
   timeoutId: number;
+  scoreCp: number | null;
+  mate: number | null;
+};
+
+export type PositionEval = {
+  bestMove: Move | null;
+  whiteCp: number; // white-relative centipawns (positive favors White)
 };
 
 class StockfishEngine {
@@ -16,34 +33,73 @@ class StockfishEngine {
     if (typeof Worker === 'undefined') return chooseDanielleMove(fen, fallbackDepth(skillLevel)) ?? null;
 
     try {
-      const worker = await this.getWorker();
-      await this.ensureReady(worker);
-      this.setSkill(worker, skillLevel);
-
-      return await new Promise<string | null>((resolve) => {
-        if (this.pending) {
-          window.clearTimeout(this.pending.timeoutId);
-          this.pending.resolve(null);
-        }
-
-        this.pending = {
-          resolve,
-          timeoutId: window.setTimeout(() => {
-            this.pending = null;
-            resolve(null);
-          }, Math.max(1800, moveTimeMs + 1200)),
-        };
-
-        worker.postMessage(`position fen ${fen}`);
-        worker.postMessage(`go movetime ${moveTimeMs}`);
-      }).then((uciMove) => {
-        if (uciMove) return this.uciToMove(fen, uciMove);
-        return chooseDanielleMove(fen, fallbackDepth(skillLevel)) ?? null;
-      });
+      const { bestUci } = await this.runSearch(fen, moveTimeMs, skillLevel);
+      if (bestUci) return this.uciToMove(fen, bestUci) ?? chooseDanielleMove(fen, fallbackDepth(skillLevel)) ?? null;
+      return chooseDanielleMove(fen, fallbackDepth(skillLevel)) ?? null;
     } catch (err) {
       console.warn('[Stockfish] Falling back to local AI:', err);
       return chooseDanielleMove(fen, fallbackDepth(skillLevel)) ?? null;
     }
+  }
+
+  // Evaluate a position for post-game analysis: returns the engine's best move plus
+  // a white-relative centipawn score so callers can measure how much a played move
+  // changed the evaluation. Analysis should run at full strength regardless of the
+  // difficulty the game was played at, so the default skill is 20.
+  async analyzePosition(fen: string, moveTimeMs = 300, skillLevel = 20): Promise<PositionEval> {
+    const sideToMove = fen.split(' ')[1] === 'b' ? -1 : 1;
+    const localFallback = (): PositionEval => ({
+      bestMove: chooseDanielleMove(fen, fallbackDepth(skillLevel)) ?? null,
+      whiteCp: clampCp(evaluateFen(fen)),
+    });
+
+    if (typeof Worker === 'undefined') return localFallback();
+
+    try {
+      const { bestUci, scoreCp, mate } = await this.runSearch(fen, moveTimeMs, skillLevel);
+      const bestMove = bestUci
+        ? this.uciToMove(fen, bestUci) ?? chooseDanielleMove(fen, fallbackDepth(skillLevel)) ?? null
+        : chooseDanielleMove(fen, fallbackDepth(skillLevel)) ?? null;
+
+      let whiteCp: number;
+      if (mate !== null) {
+        whiteCp = (mate > 0 ? MATE_CP : -MATE_CP) * sideToMove;
+      } else if (scoreCp !== null) {
+        whiteCp = scoreCp * sideToMove;
+      } else {
+        whiteCp = evaluateFen(fen);
+      }
+      return { bestMove, whiteCp: clampCp(whiteCp) };
+    } catch (err) {
+      console.warn('[Stockfish] analyzePosition fallback:', err);
+      return localFallback();
+    }
+  }
+
+  private async runSearch(fen: string, moveTimeMs: number, skillLevel: number): Promise<SearchResult> {
+    const worker = await this.getWorker();
+    await this.ensureReady(worker);
+    this.setSkill(worker, skillLevel);
+
+    return await new Promise<SearchResult>((resolve) => {
+      if (this.pending) {
+        window.clearTimeout(this.pending.timeoutId);
+        this.pending.resolve({ bestUci: null, scoreCp: null, mate: null });
+      }
+
+      this.pending = {
+        resolve,
+        scoreCp: null,
+        mate: null,
+        timeoutId: window.setTimeout(() => {
+          this.pending = null;
+          resolve({ bestUci: null, scoreCp: null, mate: null });
+        }, Math.max(1800, moveTimeMs + 1200)),
+      };
+
+      worker.postMessage(`position fen ${fen}`);
+      worker.postMessage(`go movetime ${moveTimeMs}`);
+    });
   }
 
   private async getWorker() {
@@ -90,12 +146,30 @@ class StockfishEngine {
   }
 
   private handleMessage(line: string) {
-    if (!line.startsWith('bestmove ') || !this.pending) return;
-    const [, bestMove] = line.split(/\s+/);
-    const pending = this.pending;
-    this.pending = null;
-    window.clearTimeout(pending.timeoutId);
-    pending.resolve(bestMove || null);
+    if (!this.pending) return;
+
+    if (line.startsWith('info ')) {
+      // Track the most recent evaluation reported during the search. The last
+      // score line before "bestmove" reflects the engine's final assessment.
+      const mateMatch = line.match(/score mate (-?\d+)/);
+      const cpMatch = line.match(/score cp (-?\d+)/);
+      if (mateMatch) {
+        this.pending.mate = Number(mateMatch[1]);
+        this.pending.scoreCp = null;
+      } else if (cpMatch) {
+        this.pending.scoreCp = Number(cpMatch[1]);
+        this.pending.mate = null;
+      }
+      return;
+    }
+
+    if (line.startsWith('bestmove ')) {
+      const [, bestMove] = line.split(/\s+/);
+      const pending = this.pending;
+      this.pending = null;
+      window.clearTimeout(pending.timeoutId);
+      pending.resolve({ bestUci: bestMove || null, scoreCp: pending.scoreCp, mate: pending.mate });
+    }
   }
 
   private uciToMove(fen: string, uci: string): Move | null {
@@ -108,6 +182,10 @@ class StockfishEngine {
     });
     return move || null;
   }
+}
+
+function clampCp(cp: number): number {
+  return Math.max(-MATE_CP, Math.min(MATE_CP, Math.round(cp)));
 }
 
 function fallbackDepth(skillLevel: number) {
