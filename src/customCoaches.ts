@@ -8,6 +8,8 @@ export type StoredCustomCoach = {
   characterId: string;
   backstory: string;
   createdAt: string;
+  speakingStyleDescription?: string;
+  sampleDialogue?: string;
 };
 
 export function loadCustomCoaches(): StoredCustomCoach[] {
@@ -39,9 +41,13 @@ export function storedCoachToConfig(stored: StoredCustomCoach): CoachConfig {
     accent: '#8f5f86',
     stockfishRange: [8, 14],
     difficultyIds: ['beginner', 'intermediate', 'advanced'],
-    voiceStyle: 'Warm and adaptive.',
+    voiceStyle: stored.speakingStyleDescription?.trim() || 'Warm and adaptive.',
     chessFocus: stored.backstory.slice(0, 120) || 'General chess coaching.',
-    promptStyle: `I speak in first person as ${stored.name}. ${stored.backstory}`,
+    promptStyle: [
+      `I speak in first person as ${stored.name}. ${stored.backstory}`,
+      stored.speakingStyleDescription?.trim() ? `Speaking style: ${stored.speakingStyleDescription.trim()}` : '',
+      stored.sampleDialogue?.trim() ? `Sample lines in my voice: ${stored.sampleDialogue.trim()}` : '',
+    ].filter(Boolean).join(' '),
     hintStyle: 'I give progressive hints tied to the position.',
   };
 }

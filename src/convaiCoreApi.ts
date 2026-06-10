@@ -22,6 +22,8 @@ export type CreateCoachInput = {
   languageCodes: string[];
   model: string;
   temperature: number;
+  speakingStyleDescription?: string;
+  sampleDialogue?: string;
 };
 
 export type CreateCoachResult = {
@@ -102,14 +104,22 @@ export async function fetchLanguages(): Promise<LanguageOption[]> {
 
 export async function createCustomCoach(input: CreateCoachInput): Promise<CreateCoachResult> {
   const headers = apiHeaders();
+  const createBody: Record<string, unknown> = {
+    charName: input.charName,
+    voiceType: input.voiceType,
+    backstory: input.backstory,
+  };
+  // Convai persona tuning — only include when provided so we never send empty strings.
+  if (input.speakingStyleDescription?.trim()) {
+    createBody.speaking_style_description = input.speakingStyleDescription.trim();
+  }
+  if (input.sampleDialogue?.trim()) {
+    createBody.speaking_style_sample_dialogues = input.sampleDialogue.trim();
+  }
   const createResponse = await fetch(`${API_BASE}/character/create`, {
     method: 'POST',
     headers,
-    body: JSON.stringify({
-      charName: input.charName,
-      voiceType: input.voiceType,
-      backstory: input.backstory,
-    }),
+    body: JSON.stringify(createBody),
   });
   if (!createResponse.ok) {
     const body = await createResponse.text();

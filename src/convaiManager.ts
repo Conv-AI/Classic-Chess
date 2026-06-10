@@ -98,6 +98,16 @@ class ChessConvaiManager {
   private speechWaitGeneration = 0;
   private micEnabled = false;
   private convaiTurnInFlight = false;
+  // A conversation epoch is bumped whenever a brand-new game starts. Speech tasks capture
+  // the epoch when enqueued and bail if it changed before they run — this discards stale
+  // queued turns (e.g. answers to messages sent during the previous game) so the coach
+  // never parrots old context after "New game".
+  private conversationEpoch = 0;
+  // Monotonic id for user chat turns. Only the most recent pending chat is allowed to run,
+  // so bombarding the coach with messages answers just the latest instead of stacking up.
+  private latestChatSeq = 0;
+  private userTranscript = '';
+  private transcriptListeners = new Set<(text: string) => void>();
 
   constructor() {
     for (const coach of COACHES) this.pool.set(coach.id, createConnection(coach));
@@ -236,6 +246,8 @@ class ChessConvaiManager {
             conn.lipsyncActive = true;
             this.speakingCoachId = conn.coach.id;
             this.lastSpeechEndedAt = 0;
+            // The coach is replying now, so the user's pending live transcript is done.
+            if (this.userTranscript) this.emitTranscript('');
             const conversationId = client.conversationSessionId ?? 0;
             if (conversationId !== conn.lastConversationId) {
               conn.lipsyncIndex = 0;
@@ -283,7 +295,20 @@ class ChessConvaiManager {
         const sessionId = payload?.sessionId ?? client.conversationSessionId ?? 'unknown';
         debugLog('Convai', `[${coach.name}] turnEnd session=${sessionId}`);
         this.captureLatestText(conn);
+        if (this.userTranscript) this.emitTranscript('');
       }));
+
+      // Live microphone transcription: stream the partial text to the UI and treat the user
+      // starting to speak as a preemption, so any in-flight orchestrated turn (a welcome line,
+      // a move comment) stops waiting and the user is given priority instead of looping.
+      conn.unsubFns.push(
+        client.on('userTranscriptionChange', (payload: any) => {
+          const text = typeof payload === 'string'
+            ? payload
+            : String(payload?.text ?? payload?.transcription ?? payload?.content ?? '');
+          this.handleUserTranscription(conn, text);
+        }) ?? (() => {}),
+      );
 
       conn.unsubFns.push(client.on('llmNoResponse', () => {
         this.markLlmNoResponse(conn);
@@ -365,10 +390,17 @@ class ChessConvaiManager {
   async runCoachTurn(
     coach: CoachConfig,
     dynamicInfo: string,
-    options: { runLlm?: RunLlmMode; preflightSilence?: boolean; maxWaitMs?: number; waitForFullSpeech?: boolean } = {},
+    options: { runLlm?: RunLlmMode; preflightSilence?: boolean; maxWaitMs?: number; waitForFullSpeech?: boolean; guard?: () => boolean } = {},
   ): Promise<string> {
     const runLlm = options.runLlm ?? 'auto';
+    const startEpoch = this.conversationEpoch;
+    const extraGuard = options.guard;
+    const stillRelevant = () => startEpoch === this.conversationEpoch && (!extraGuard || extraGuard());
     return this.runExclusiveSpeech(async () => {
+      if (!stillRelevant()) {
+        debugLog('Convai', `[${coach.name}] Coach turn superseded before start; skipping`);
+        return '';
+      }
       this.convaiTurnInFlight = true;
       this.emitStatus();
       try {
@@ -383,8 +415,18 @@ class ChessConvaiManager {
         if (options.preflightSilence !== false) {
           await this.waitForGlobalSilence(`${coach.name} turn preflight`, 150, 300);
         }
+        const genAtStart = this.speechWaitGeneration;
         let response = await this.sendContextTurn(coach, dynamicInfo, runLlm, options.maxWaitMs, options.waitForFullSpeech);
-        if (!response.trim() && runLlm === 'true') {
+        // Only retry a genuinely empty forced turn — not one cut short by the user or a new
+        // game. A bumped speech generation or changed epoch means we were interrupted, and
+        // replaying the same line then would re-greet/re-explain on top of whatever the user
+        // just triggered (the "welcome keeps playing" loop).
+        if (
+          !response.trim() &&
+          runLlm === 'true' &&
+          this.speechWaitGeneration === genAtStart &&
+          stillRelevant()
+        ) {
           const conn = this.pool.get(coach.id);
           if (conn && !conn.llmNoResponse && !conn.responseSuppressed) {
             debugLog('Convai', `[${coach.name}] Forced turn empty; reconnecting once`);
@@ -395,7 +437,9 @@ class ChessConvaiManager {
               staticPolicy: conn.staticPolicy,
               endUserId: conn.endUserId,
             });
-            response = await this.sendContextTurn(coach, dynamicInfo, runLlm, options.maxWaitMs, options.waitForFullSpeech);
+            if (stillRelevant()) {
+              response = await this.sendContextTurn(coach, dynamicInfo, runLlm, options.maxWaitMs, options.waitForFullSpeech);
+            }
           }
         }
         const conn = this.pool.get(coach.id);
@@ -408,8 +452,14 @@ class ChessConvaiManager {
     });
   }
 
-  async speakCoachMessage(coach: CoachConfig, message: string, dynamicInfo: string): Promise<string> {
+  async speakCoachMessage(coach: CoachConfig, message: string, dynamicInfo: string, guard?: () => boolean): Promise<string> {
+    const startEpoch = this.conversationEpoch;
+    const stillRelevant = () => startEpoch === this.conversationEpoch && (!guard || guard());
     return this.runExclusiveSpeech(async () => {
+      if (!stillRelevant()) {
+        debugLog('Convai', `[${coach.name}] Message superseded before start; skipping`);
+        return '';
+      }
       this.convaiTurnInFlight = true;
       this.emitStatus();
       try {
@@ -422,13 +472,14 @@ class ChessConvaiManager {
           endUserId: this.pool.get(coach.id)?.endUserId,
         });
         await this.waitForGlobalSilence(`${coach.name} turn preflight`, 150, 300);
+        const genAtStart = this.speechWaitGeneration;
         let response = await this.sendAndAwaitSpeech(coach, message, dynamicInfo);
         if (!response.trim()) {
           const conn = this.pool.get(coach.id);
           if (conn?.llmNoResponse || conn?.responseSuppressed) {
             return '';
           }
-          if (conn && message.trim()) {
+          if (conn && message.trim() && this.speechWaitGeneration === genAtStart && stillRelevant()) {
             debugLog('Convai', `[${coach.name}] Empty response, reconnecting once`);
             await this.disconnectOne(conn);
             await this.connectCoach(coach, {
@@ -437,7 +488,9 @@ class ChessConvaiManager {
               staticPolicy: conn.staticPolicy,
               endUserId: conn.endUserId,
             });
-            response = await this.sendAndAwaitSpeech(coach, message, dynamicInfo);
+            if (stillRelevant()) {
+              response = await this.sendAndAwaitSpeech(coach, message, dynamicInfo);
+            }
           }
         }
         return response;
@@ -449,12 +502,21 @@ class ChessConvaiManager {
   }
 
   async sendUserChat(coach: CoachConfig, difficulty: DifficultyConfig, message: string, dynamicInfo: string): Promise<string> {
+    // The user gets priority: stop whatever the coach is currently saying right away, and
+    // tag this turn so that if more messages arrive while it waits, only the newest one is
+    // actually answered (older ones are skipped by the guard below). `dynamicInfo` carries
+    // the live board context, which sendAndAwaitSpeech pushes before the question.
+    const mySeq = ++this.latestChatSeq;
+    const myEpoch = this.conversationEpoch;
+    this.interruptBot(coach);
+    this.emitTranscript('');
     const staticPolicy = `${buildCoachInstruction(coach, difficulty, 'chat')}`;
     await this.seedStaticCoachPolicy(coach, staticPolicy);
     return this.speakCoachMessage(
       coach,
       `The student asks: "${message}". Answer using the current board context.`,
       dynamicInfo,
+      () => mySeq === this.latestChatSeq && myEpoch === this.conversationEpoch,
     );
   }
 
@@ -491,6 +553,12 @@ class ChessConvaiManager {
       conn.staticPolicy = staticPolicy;
       conn.endUserId = sessionId;
     }
+
+    // New conversation: invalidate any speech turns still queued from the previous game and
+    // drop pending user-chat sequencing, so nothing from the old game speaks into the new one.
+    this.conversationEpoch++;
+    this.latestChatSeq = 0;
+    this.emitTranscript('');
 
     this.interruptBot(coach);
     await this.connectCoach(coach, {
@@ -753,11 +821,44 @@ class ChessConvaiManager {
       } else {
         debugLog('Convai', `[Mic] Disabling microphone`);
         await conn.client.audioControls?.disableAudio?.();
+        this.emitTranscript('');
       }
     } catch (err) {
       debugLog('Convai', `[Mic] Toggle failed:`, err);
     }
     this.emitStatus();
+  }
+
+  /** Subscribe to live user speech transcription ('' when cleared). */
+  onUserTranscript(listener: (text: string) => void): () => void {
+    this.transcriptListeners.add(listener);
+    listener(this.userTranscript);
+    return () => this.transcriptListeners.delete(listener);
+  }
+
+  getUserTranscript(): string {
+    return this.userTranscript;
+  }
+
+  private emitTranscript(text: string): void {
+    if (text === this.userTranscript) return;
+    this.userTranscript = text;
+    for (const listener of this.transcriptListeners) listener(text);
+  }
+
+  private handleUserTranscription(conn: CoachConnection, rawText: string): void {
+    const text = (rawText ?? '').trim();
+    // Ignore echoes of text we sent programmatically (chat box / hints) — only genuine
+    // live mic speech should drive the transcript + preemption.
+    if (/^the student asks:/i.test(text)) return;
+    // The user starting to speak preempts any in-flight orchestrated turn: bump the speech
+    // generation so its wait/retry logic aborts instead of replaying over the user.
+    if (text && !this.userTranscript) {
+      this.speechWaitGeneration++;
+      this.lastSpeechEndedAt = Date.now();
+      debugLog('Convai', `[${conn.coach.name}] User started speaking (mic) — preempting`);
+    }
+    this.emitTranscript(text);
   }
 
   getIsSpeaking(coachId?: CoachId): boolean {

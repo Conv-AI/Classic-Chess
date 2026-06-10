@@ -2,6 +2,7 @@ import { Component, Suspense, useCallback, useEffect, useRef, useState, type Rea
 import { Canvas } from '@react-three/fiber';
 import { useGLTF } from '@react-three/drei';
 import type { CoachConfig } from './coachConfig';
+import { chessConvai } from './convaiManager';
 import { debugLog } from './debugLog';
 import ReallusionCharacter from './ReallusionCharacter';
 import Tooltip from './Tooltip';
@@ -85,6 +86,18 @@ export default function CoachCard({
   const [displayedLine, setDisplayedLine] = useState('');
   const revealTargetRef = useRef('');
   const revealShownRef = useRef('');
+  const [micEnabled, setMicEnabled] = useState(false);
+  const [botThinking, setBotThinking] = useState(false);
+  const [botSpeaking, setBotSpeaking] = useState(false);
+  const suppressThinkingUntilRef = useRef(0);
+
+  useEffect(() => chessConvai.onStatus((s) => {
+    const now = Date.now();
+    if (s.speaking) suppressThinkingUntilRef.current = now + 650;
+    setMicEnabled(s.micEnabled);
+    setBotSpeaking(s.speaking);
+    setBotThinking(s.thinking && !s.speaking && now >= suppressThinkingUntilRef.current);
+  }), []);
 
   useGLTF.preload(modelUrl);
   useGLTF.preload(idleUrl);
@@ -225,6 +238,13 @@ export default function CoachCard({
             <strong>{characterFailed ? 'Coach could not load' : `Loading ${coach.name}`}</strong>
           </div>
         )}
+        {characterReady && (
+          <CharacterActivity
+            micEnabled={micEnabled}
+            thinking={botThinking}
+            botSpeaking={botSpeaking}
+          />
+        )}
       </div>
       <div className="character-caption">
         <div className="caption-info">
@@ -276,5 +296,38 @@ export default function CoachCard({
         {displayedLine && <p ref={lineRef} className="coach-line">{displayedLine}</p>}
       </div>
     </section>
+  );
+}
+
+/**
+ * Overlays the character window with a compact status chip for live mic listening or
+ * coach thinking. Speech itself is handled by the caption below the portrait.
+ */
+function CharacterActivity({
+  micEnabled,
+  thinking,
+  botSpeaking,
+}: {
+  micEnabled: boolean;
+  thinking: boolean;
+  botSpeaking: boolean;
+}) {
+  const mode = thinking ? 'thinking' : (micEnabled && !botSpeaking) ? 'listening' : null;
+  if (!mode) return null;
+
+  return (
+    <div className={`coach-activity-chip is-${mode}`} aria-live="polite">
+      {mode === 'thinking' ? (
+        <>
+          <span>Thinking</span>
+          <span className="activity-dots"><i /><i /><i /></span>
+        </>
+      ) : (
+        <>
+          <span className="activity-mic-dot" />
+          <span>Listening</span>
+        </>
+      )}
+    </div>
   );
 }

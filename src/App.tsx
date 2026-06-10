@@ -80,6 +80,109 @@ function clickBack(action: () => void) {
   action();
 }
 
+function wheelDeltaToPixels(event: WheelEvent) {
+  if (event.deltaMode === WheelEvent.DOM_DELTA_LINE) return event.deltaY * 16;
+  if (event.deltaMode === WheelEvent.DOM_DELTA_PAGE) return event.deltaY * window.innerHeight;
+  return event.deltaY;
+}
+
+function canScrollVertically(el: HTMLElement, deltaY: number) {
+  const maxScroll = el.scrollHeight - el.clientHeight;
+  if (maxScroll <= 1) return false;
+  if (deltaY > 0) return el.scrollTop < maxScroll - 1;
+  if (deltaY < 0) return el.scrollTop > 1;
+  return false;
+}
+
+function findScrollableAncestor(target: Element, root: HTMLElement, deltaY: number) {
+  let el: HTMLElement | null = target instanceof HTMLElement ? target : target.parentElement;
+  while (el && el !== root) {
+    const style = window.getComputedStyle(el);
+    if (/(auto|scroll|overlay)/.test(style.overflowY) && canScrollVertically(el, deltaY)) {
+      return el;
+    }
+    el = el.parentElement;
+  }
+  return null;
+}
+
+function createSmoothWheelScroller() {
+  let target: HTMLElement | null = null;
+  let targetTop = 0;
+  let raf = 0;
+
+  const step = () => {
+    if (!target) {
+      raf = 0;
+      return;
+    }
+
+    const diff = targetTop - target.scrollTop;
+    if (Math.abs(diff) < 0.5) {
+      target.scrollTop = targetTop;
+      target = null;
+      raf = 0;
+      return;
+    }
+
+    target.scrollTop += diff * 0.28;
+    raf = requestAnimationFrame(step);
+  };
+
+  return {
+    scroll(el: HTMLElement, deltaY: number) {
+      if (target !== el) {
+        target = el;
+        targetTop = el.scrollTop;
+      }
+      const maxScroll = el.scrollHeight - el.clientHeight;
+      targetTop = Math.max(0, Math.min(maxScroll, targetTop + deltaY));
+      if (!raf) raf = requestAnimationFrame(step);
+    },
+    cancel() {
+      if (raf) cancelAnimationFrame(raf);
+      raf = 0;
+      target = null;
+    },
+  };
+}
+
+function useWheelScrollBridge() {
+  useEffect(() => {
+    const smoothScroller = createSmoothWheelScroller();
+
+    const handleWheel = (event: WheelEvent) => {
+      if (event.defaultPrevented || event.ctrlKey) return;
+      if (!(event.target instanceof Element)) return;
+
+      const screen = event.target.closest('.game-screen, .menu-screen, .app-menu');
+      if (!(screen instanceof HTMLElement) || screen.classList.contains('loading-screen')) return;
+
+      const deltaY = wheelDeltaToPixels(event);
+      if (!deltaY || findScrollableAncestor(event.target, screen, deltaY)) return;
+
+      const pageScroller = document.scrollingElement instanceof HTMLElement
+        ? document.scrollingElement
+        : null;
+      const scrollTarget = pageScroller && canScrollVertically(pageScroller, deltaY)
+        ? pageScroller
+        : canScrollVertically(screen, deltaY)
+          ? screen
+          : null;
+      if (!scrollTarget || !canScrollVertically(scrollTarget, deltaY)) return;
+
+      smoothScroller.scroll(scrollTarget, deltaY);
+      event.preventDefault();
+    };
+
+    window.addEventListener('wheel', handleWheel, { capture: true, passive: false });
+    return () => {
+      window.removeEventListener('wheel', handleWheel, { capture: true });
+      smoothScroller.cancel();
+    };
+  }, []);
+}
+
 function MicButton({ className }: { className?: string }) {
   const [micOn, setMicOn] = useState(false);
 
@@ -107,6 +210,8 @@ function MicButton({ className }: { className?: string }) {
 }
 
 function App() {
+  useWheelScrollBridge();
+
   const [screen, setScreen] = useState<Screen>('menu');
   const [coachId, setCoachId] = useState<CoachId>('leila');
   const [difficultyId, setDifficultyId] = useState<DifficultyId>('intermediate');
@@ -325,6 +430,7 @@ function ChessGame({
   const prevThinkingRef = useRef(false);
   const [yourTurnPulse, setYourTurnPulse] = useState(false);
   const [convaiStatus, setConvaiStatus] = useState(chessConvai.getStatus());
+  const [recentCoachSpeech, setRecentCoachSpeech] = useState(false);
   // Track which speech reasons were last fired and at which fullmove number, so we can
   // suppress repeated positional advice (e.g. "your king is still in the center").
   const spokenReasonsRef = useRef<Map<string, number>>(new Map());
@@ -393,16 +499,28 @@ function ChessGame({
   }, [game, selected]);
 
   const lastMove = history[history.length - 1];
-  const convaiBusy = convaiStatus.convaiTurnInFlight || convaiStatus.thinking || convaiStatus.speaking;
-  const status = thinking
-    ? `${coach.name} is calculating...`
-    : (coachResponding || guidanceLoading || convaiBusy)
-      ? `${coach.name} is thinking...`
-      : resigned
-        ? `You resigned. ${coach.name} wins.`
-        : getStatus(game, coach.name);
+  const convaiPreparing = convaiStatus.thinking || convaiStatus.convaiTurnInFlight || coachResponding || guidanceLoading;
+  const status = convaiStatus.speaking
+    ? `${coach.name} is speaking...`
+    : thinking && !recentCoachSpeech
+      ? `${coach.name} is calculating...`
+      : convaiPreparing && !recentCoachSpeech
+        ? `${coach.name} is thinking...`
+        : resigned
+          ? `You resigned. ${coach.name} wins.`
+          : getStatus(game, coach.name);
 
   useEffect(() => chessConvai.onStatus(setConvaiStatus), []);
+
+  useEffect(() => {
+    if (convaiStatus.speaking) {
+      setRecentCoachSpeech(true);
+      return undefined;
+    }
+    if (!recentCoachSpeech) return undefined;
+    const timer = window.setTimeout(() => setRecentCoachSpeech(false), 650);
+    return () => window.clearTimeout(timer);
+  }, [convaiStatus.speaking, recentCoachSpeech]);
 
   useEffect(() => {
     if (isCovered || welcomeSpokenRef.current) return;
@@ -1727,11 +1845,58 @@ function ReplayViewer({ session }: { session: StoredGameSession }) {
   );
 }
 
+const DEFAULT_SPEAKING_STYLE = `**General rules:** Silence is the default. Only speak when there is a tactical moment — a tactic found or missed, a forcing move available, a calculation error, or a hint requested. Never narrate what the student just moved. Never narrate your own moves. Real content only — never hype or generic encouragement. Reference the calculation habit directly: "Count checks first.", "The capture works only if the defender is overloaded." One to two sentences maximum.
+
+For hints: level 1 — checks/captures/threats; level 2 — name the motif; level 3 — move and why it works. Natural language only — "knight to F 3" not "Nf3", "E 4" not "e4". Capitalize file letters for TTS.
+
+**New (unrated–800):** Sofia rarely coaches beginners. If you must, introduce forcing moves without the term: "some moves your opponent must answer right away, like a check or a capture." Name patterns only when they appear and define immediately.
+
+**Beginner (800–1200):** Introduce the checks-captures-threats routine by name and repeat it often. Name and briefly explain each pattern when it appears: pin, fork, skewer, discovered attack. Energetic but grounded — no reaction unless the move has tactical content.
+
+**Intermediate (1200–1600):** Full tactical vocabulary without definition — pin, skewer, deflection, decoy, overload, clearance, double attack. When a tactic is missed, identify exactly what the student should have scanned. When a combination is found, describe the motif and calculation structure.
+
+**Advanced (1600–2000):** Dense, no hand-holding. Name the motif and exact sequence in natural language. Discuss initiative — when to sacrifice material to keep the attack. Push for best move, not just a good one.
+
+**Expert (2000+):** Speak only at genuinely non-trivial combinations — a queen sacrifice, a quiet move in a forcing sequence, a defensive resource the engine finds. Go directly to the calculation structure.`;
+
+const DEFAULT_SAMPLE_DIALOGUE = `**Routine move:** *(silence)*
+
+**New player spots a free capture:**
+"Good — you saw you could take a piece for free. Before any move, always look for what you can capture."
+
+**Beginner misses a fork:**
+"There was a fork — one move attacking two pieces at once. Always scan for those before choosing a quiet move."
+
+**Intermediate finds a pin:**
+"That pin is real. The knight cannot move without exposing the queen behind it — follow up correctly and you win material."
+
+**Advanced misses a deflection:**
+"There was a deflection on the queenside — sacrifice to pull the rook off the back rank and the king is exposed. Remove the defender by force."
+
+**Student blunders into a pin:**
+"That piece is now pinned — moving it exposes something more valuable. Check for pins before you commit."
+
+**Correct puzzle move:** "That is it. Good calculation."
+
+**Wrong puzzle move:** "Not quite. Let us flag this one and come back to it."
+
+**Hint 1:** "Start with checks — what pieces can give check right now?"
+
+**Hint 2:** "Think about a fork. Two of the opponent's pieces are close enough to attack at once."
+
+**Hint 3:** "Move your knight to D 7. It forks the rook and the king — both cannot be saved."
+
+**Coach's own move (teaching):** "I created a discovered attack threat. When one piece moves, the piece behind it becomes dangerous — one of the most powerful tactical patterns."
+
+**Post-game:** "On move 18 a check-capture-threat sequence would have won material outright. The habit: scan forcing moves before quiet ones, every turn."`;
+
 function CustomCoachCreator({ onBack }: { onBack: () => void }) {
   const [voices, setVoices] = useState<VoiceOption[]>([]);
   const [languages, setLanguages] = useState<LanguageOption[]>([]);
   const [name, setName] = useState('My Chess Coach');
   const [backstory, setBackstory] = useState('A patient chess coach who adapts to my level, explains ideas clearly, and gives progressive hints before revealing answers.');
+  const [speakingStyle, setSpeakingStyle] = useState(DEFAULT_SPEAKING_STYLE);
+  const [sampleDialogue, setSampleDialogue] = useState(DEFAULT_SAMPLE_DIALOGUE);
   const [voice, setVoice] = useState('');
   const [language, setLanguage] = useState('en-US');
   const [model, setModel] = useState(DEFAULT_MODEL);
@@ -1789,6 +1954,8 @@ function CustomCoachCreator({ onBack }: { onBack: () => void }) {
         languageCodes: [language],
         model,
         temperature,
+        speakingStyleDescription: speakingStyle,
+        sampleDialogue,
       });
       const customId = `custom-${result.charID.slice(0, 8)}` as CoachId;
       saveCustomCoach({
@@ -1797,6 +1964,8 @@ function CustomCoachCreator({ onBack }: { onBack: () => void }) {
         characterId: result.charID,
         backstory,
         createdAt: new Date().toISOString(),
+        speakingStyleDescription: speakingStyle.trim() || undefined,
+        sampleDialogue: sampleDialogue.trim() || undefined,
       });
       setCreatedId(result.charID);
       setStatus(`Coach created and added to the menu as "${name}". Select them from the coach list on the main screen.`);
@@ -1818,6 +1987,24 @@ function CustomCoachCreator({ onBack }: { onBack: () => void }) {
           {!hasConvaiApiKeyConfigured() && <p className="warning-text">Add a Convai API key from the main menu before creating a coach.</p>}
           <label>Name<input value={name} onChange={(event) => setName(event.target.value)} /></label>
           <label>Backstory<textarea value={backstory} onChange={(event) => setBackstory(event.target.value)} /></label>
+          <label>
+            Speaking style
+            <span className="field-hint">How the coach talks — tone, pacing, and when to stay quiet.</span>
+            <textarea
+              className="creator-tall-field"
+              value={speakingStyle}
+              onChange={(event) => setSpeakingStyle(event.target.value)}
+            />
+          </label>
+          <label>
+            Sample dialogue
+            <span className="field-hint">A few example lines in the coach's voice to anchor their delivery.</span>
+            <textarea
+              className="creator-tall-field"
+              value={sampleDialogue}
+              onChange={(event) => setSampleDialogue(event.target.value)}
+            />
+          </label>
           <div className="form-row">
             <label>Voice<select value={voice} onChange={(event) => setVoice(event.target.value)}>
               <option value="">{compatibleVoices.length ? 'Choose a voice' : 'Loading voices…'}</option>
