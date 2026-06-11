@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
 import { KeyRound } from 'lucide-react';
 import { getAllCoaches, DIFFICULTIES, suggestedDifficultyForCoach, type CoachId, type DifficultyId } from './coachConfig';
 import { maskConvaiApiKey, getConvaiApiKey } from './convaiApiKey';
@@ -49,6 +49,7 @@ type Props = {
   onCreator: () => void;
   onDataset?: () => void;
   onManageApiKey?: () => void;
+  authSlot?: ReactNode;
 };
 
 export default function MenuScreen({
@@ -65,6 +66,7 @@ export default function MenuScreen({
   onCreator,
   onDataset,
   onManageApiKey,
+  authSlot,
 }: Props) {
   const [selectedMode, setSelectedMode] = useState<Mode>('quickplay');
   const coaches = getAllCoaches();
@@ -85,7 +87,10 @@ export default function MenuScreen({
     <main className="menu-screen app-menu">
       <section className="menu-workspace" aria-label="Classic Chess setup">
         <div className="menu-heading">
-          <p className="eyebrow">Convai Chess Coaches</p>
+          <div className="menu-heading-row">
+            <p className="eyebrow">Convai Chess Coaches</p>
+            {authSlot && <div className="menu-auth-slot">{authSlot}</div>}
+          </div>
           <h1>Classic Chess</h1>
           <p>Choose a coach, set your level, then play a full game, tackle puzzles, review your sessions, or build your own coach.</p>
           <Tooltip

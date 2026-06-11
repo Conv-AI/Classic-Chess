@@ -3,9 +3,11 @@ import { createPortal } from 'react-dom';
 import { Chess, type Move, type Square } from 'chess.js';
 import { ChevronsLeft, ChevronsRight, ChevronLeft, ChevronRight, Clipboard } from 'lucide-react';
 import { analyzeGame } from './analysis';
+import AuthButton from './AuthButton';
+import { authUserToIdentity, type AuthUser, type UserIdentity } from './auth';
 import ApiKeyModal from './ApiKeyModal';
 import ChatDrawer from './ChatDrawer';
-import { getCoach, getDifficulty, type CoachId, type DifficultyId } from './coachConfig';
+import { getCoach, getDifficulty, type CoachId, type DifficultyConfig, type DifficultyId } from './coachConfig';
 import { hasConvaiApiKey as hasConvaiApiKeyConfigured, createCustomCoach, DEFAULT_MODEL, fetchLanguages, fetchVoices, filterVoicesForLanguage, MODEL_OPTIONS, pickDefaultVoice, type LanguageOption, type VoiceOption } from './convaiCoreApi';
 import { hasConvaiApiKey } from './convaiApiKey';
 import { saveCustomCoach } from './customCoaches';
@@ -78,6 +80,27 @@ function clickBack(action: () => void) {
   unlockUiAudio();
   playUiSound('back');
   action();
+}
+
+function addStudentContext(text: string, identity: UserIdentity | null): string {
+  if (!identity) return text;
+  return [
+    text,
+    `Signed-in student profile: their preferred name is ${identity.displayName}.`,
+    'Use the student name naturally when it helps, but do not overuse it.',
+  ].join(' ');
+}
+
+function buildLongTermGameMemory(analysis: AnalysisSummary, difficulty: DifficultyConfig): string {
+  const firstTip = analysis.tips[0] ?? 'keep scanning checks, captures, and threats before quiet moves';
+  const issue = analysis.blunders > 0
+    ? `${analysis.blunders} blunder${analysis.blunders > 1 ? 's' : ''}`
+    : analysis.mistakes > 0
+      ? `${analysis.mistakes} mistake${analysis.mistakes > 1 ? 's' : ''}`
+      : analysis.inaccuracies > 0
+        ? `${analysis.inaccuracies} inaccuracy${analysis.inaccuracies > 1 ? 'ies' : 'y'}`
+        : 'a mostly solid game';
+  return `In a ${difficulty.label} chess game, the student had ${issue}; useful coaching focus: ${firstTip}.`;
 }
 
 function wheelDeltaToPixels(event: WheelEvent) {
@@ -222,6 +245,11 @@ function App() {
   const [sessions, setSessions] = useState<StoredGameSession[]>(() => loadSessions());
   const [apiKeyModalOpen, setApiKeyModalOpen] = useState(() => !hasConvaiApiKey());
   const [apiKeyVersion, setApiKeyVersion] = useState(0);
+  const [authUser, setAuthUser] = useState<AuthUser | null>(null);
+  const userIdentity = useMemo(() => authUserToIdentity(authUser), [authUser]);
+  const handleAuthUserChange = useCallback((user: AuthUser | null) => {
+    setAuthUser(user);
+  }, []);
   const coach = getCoach(coachId);
 
   const handleCoachingControlModeChange = useCallback((mode: CoachingControlMode) => {
@@ -263,7 +291,13 @@ function App() {
     debugLog('App', `Awaiting connectCoach + avatar prewarm for ${selectedCoach.name}`);
     const staticPolicy = buildCoachInstruction(selectedCoach, getDifficulty(difficultyId), 'move');
     await Promise.all([
-      chessConvai.connectCoach(selectedCoach, { staticPolicy, waitForBotReady: true, readyWaitMs: 5000 }),
+      chessConvai.connectCoach(selectedCoach, {
+        staticPolicy,
+        waitForBotReady: true,
+        readyWaitMs: 5000,
+        endUserId: userIdentity?.endUserId,
+        endUserMetadata: userIdentity?.endUserMetadata,
+      }),
       avatarReady,
     ]);
     debugLog('App', `Coach and avatar ready — transitioning to game`);
@@ -284,6 +318,7 @@ function App() {
           coachId={coachId}
           difficultyId={difficultyId}
           coachingControlMode={coachingControlMode}
+          userIdentity={userIdentity}
           isCovered={screen === 'loading'}
           onBackToMenu={() => {
             refreshSessions();
@@ -302,7 +337,7 @@ function App() {
       </>
     );
   } else if (screen === 'puzzles') {
-    body = <PuzzleScreen coachId={coachId} difficultyId={difficultyId} onBack={() => setScreen('menu')} key={`puzzles-${coachId}`} />;
+    body = <PuzzleScreen coachId={coachId} difficultyId={difficultyId} userIdentity={userIdentity} onBack={() => setScreen('menu')} key={`puzzles-${coachId}`} />;
   } else if (screen === 'games') {
     body = (
       <MyGamesScreen
@@ -341,6 +376,7 @@ function App() {
         onCreator={() => setScreen('creator')}
         onDataset={DATASET_TOOLS_ENABLED ? () => setScreen('dataset') : undefined}
         onManageApiKey={() => setApiKeyModalOpen(true)}
+        authSlot={<AuthButton user={authUser} onUserChange={handleAuthUserChange} />}
       />
     );
   }
@@ -348,6 +384,7 @@ function App() {
   return (
     <>
       {body}
+      {screen !== 'menu' && <AuthButton user={authUser} onUserChange={handleAuthUserChange} />}
       <ApiKeyModal
         open={apiKeyModalOpen}
         required={!hasConvaiApiKey()}
@@ -395,6 +432,7 @@ function ChessGame({
   coachId,
   difficultyId,
   coachingControlMode,
+  userIdentity,
   onBackToMenu,
   onSessionsChanged,
   onCoachReady,
@@ -403,6 +441,7 @@ function ChessGame({
   coachId: CoachId;
   difficultyId: DifficultyId;
   coachingControlMode: CoachingControlMode;
+  userIdentity: UserIdentity | null;
   onBackToMenu: () => void;
   onSessionsChanged: () => void;
   onCoachReady?: () => void;
@@ -499,6 +538,7 @@ function ChessGame({
   }, [game, selected]);
 
   const lastMove = history[history.length - 1];
+  const identityKey = userIdentity?.endUserId ?? 'guest';
   const convaiPreparing = convaiStatus.thinking || convaiStatus.convaiTurnInFlight || coachResponding || guidanceLoading;
   const status = convaiStatus.speaking
     ? `${coach.name} is speaking...`
@@ -527,14 +567,31 @@ function ChessGame({
     if (!convaiStatus.botReady) return;
     welcomeSpokenRef.current = true;
     const freshGame = new Chess();
-    const openingInfo = buildDynamicCoachInfo(freshGame, null, null, coach, difficulty);
-    const welcomeInfo = buildWelcomeDynamicInfo(freshGame, coach, difficulty, sessionIdRef.current);
+    const openingInfo = addStudentContext(buildDynamicCoachInfo(freshGame, null, null, coach, difficulty), userIdentity);
+    const welcomeInfo = addStudentContext(buildWelcomeDynamicInfo(freshGame, coach, difficulty, sessionIdRef.current), userIdentity);
     void (async () => {
-      await chessConvai.beginNewGame(coach, difficulty, sessionIdRef.current, openingInfo);
+      await chessConvai.beginNewGame(coach, difficulty, sessionIdRef.current, openingInfo, userIdentity);
       const spoken = await chessConvai.speakWelcome(coach, welcomeInfo);
       if (spoken) setCoachLine(spoken);
     })();
-  }, [isCovered, convaiStatus.botReady, coach, difficulty]);
+  }, [isCovered, convaiStatus.botReady, coach, difficulty, userIdentity]);
+
+  useEffect(() => {
+    if (isCovered || !welcomeSpokenRef.current) return;
+    const staticPolicy = buildCoachInstruction(coach, difficulty, 'move');
+    const dynamicInfo = addStudentContext(
+      buildDynamicCoachInfo(game, null, lastMove ? moveRecordToMoveLike(lastMove) : null, coach, difficulty, history),
+      userIdentity,
+    );
+    void chessConvai.connectCoach(coach, {
+      waitForBotReady: true,
+      readyWaitMs: 3500,
+      reconnectIfStale: false,
+      staticPolicy,
+      endUserId: userIdentity?.endUserId ?? sessionIdRef.current,
+      endUserMetadata: userIdentity?.endUserMetadata ?? null,
+    }).then(() => chessConvai.updateCoachContext(coach, dynamicInfo));
+  }, [identityKey]);
 
   useEffect(() => {
     return chessConvai.onResponse((response) => {
@@ -570,8 +627,11 @@ function ChessGame({
     }).then((summary) => {
       setAnalysis(summary);
       setAnalysisPending(false);
+      if (userIdentity) {
+        void chessConvai.rememberGameSummary(coach, buildLongTermGameMemory(summary, difficulty));
+      }
     });
-  }, [difficulty.stockfishSkill, game, history, gameEnded]);
+  }, [coach, difficulty, userIdentity, game, history, gameEnded]);
 
   useEffect(() => {
     if (!gameEnded || gameOverHandledRef.current) return;
@@ -655,9 +715,9 @@ function ChessGame({
     setCoachGuidance('');
     setGuidanceLoading(false);
 
-    const openingInfo = buildDynamicCoachInfo(freshGame, null, null, coach, difficulty);
-    const welcomeInfo = buildWelcomeDynamicInfo(freshGame, coach, difficulty, newSessionId);
-    await chessConvai.beginNewGame(coach, difficulty, newSessionId, openingInfo);
+    const openingInfo = addStudentContext(buildDynamicCoachInfo(freshGame, null, null, coach, difficulty), userIdentity);
+    const welcomeInfo = addStudentContext(buildWelcomeDynamicInfo(freshGame, coach, difficulty, newSessionId), userIdentity);
+    await chessConvai.beginNewGame(coach, difficulty, newSessionId, openingInfo, userIdentity);
     welcomeSpokenRef.current = true;
     const spoken = await chessConvai.speakWelcome(coach, welcomeInfo);
     if (spoken) setCoachLine(spoken);
@@ -1359,7 +1419,17 @@ function squareCenter(square: string) {
 
 const PUZZLE_GROUP_SIZE = 5;
 
-function PuzzleScreen({ coachId, difficultyId, onBack }: { coachId: CoachId; difficultyId: DifficultyId; onBack: () => void }) {
+function PuzzleScreen({
+  coachId,
+  difficultyId,
+  userIdentity,
+  onBack,
+}: {
+  coachId: CoachId;
+  difficultyId: DifficultyId;
+  userIdentity: UserIdentity | null;
+  onBack: () => void;
+}) {
   const coach = getCoach(coachId);
   const allForDifficulty = useMemo(
     () => PUZZLES.filter((puzzle) => puzzle.difficultyId === difficultyId),
@@ -1410,7 +1480,10 @@ function PuzzleScreen({ coachId, difficultyId, onBack }: { coachId: CoachId; dif
   useEffect(() => {
     debugLog('PuzzleScreen', `Mounting — connecting coach ${coach.name} (${coach.id})`);
     chessConvai.unlockAudio();
-    void chessConvai.connectCoach(coach).then(() => {
+    void chessConvai.connectCoach(coach, {
+      endUserId: userIdentity?.endUserId,
+      endUserMetadata: userIdentity?.endUserMetadata,
+    }).then(() => {
       debugLog('PuzzleScreen', `connectCoach resolved for ${coach.name}`);
     });
 
@@ -1434,7 +1507,7 @@ function PuzzleScreen({ coachId, difficultyId, onBack }: { coachId: CoachId; dif
       debugLog('PuzzleScreen', 'Unmounting — unsubscribing status listener');
       unsub();
     };
-  }, [coach]);
+  }, [coach, userIdentity]);
 
   // Listen for AI text responses
   useEffect(() => {

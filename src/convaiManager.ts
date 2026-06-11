@@ -47,6 +47,8 @@ type CoachConnection = {
   lastSpeechEndedAt: number;
   staticPolicy: string;
   endUserId: string;
+  endUserMetadata: Record<string, unknown> | null;
+  profileMemoryKey: string;
   boardVision: BoardVisionSession | null;
 };
 
@@ -81,8 +83,14 @@ function createConnection(coach: CoachConfig): CoachConnection {
     lastSpeechEndedAt: 0,
     staticPolicy: '',
     endUserId: '',
+    endUserMetadata: null,
+    profileMemoryKey: '',
     boardVision: null,
   };
+}
+
+function sameMetadata(a: Record<string, unknown> | null, b: Record<string, unknown> | null): boolean {
+  return JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
 }
 
 class ChessConvaiManager {
@@ -131,21 +139,24 @@ class ChessConvaiManager {
       readyWaitMs?: number;
       reconnectIfStale?: boolean;
       endUserId?: string;
+      endUserMetadata?: Record<string, unknown> | null;
       staticPolicy?: string;
     } = {},
   ): Promise<void> {
     this.activeCoachId = coach.id as CoachId;
     const conn = this.ensureConnection(coach);
 
-    if (options.staticPolicy) conn.staticPolicy = options.staticPolicy;
-    if (options.endUserId) conn.endUserId = options.endUserId;
-
     const needsReconnectForUser = Boolean(
-      options.endUserId &&
       conn.connected &&
-      conn.endUserId &&
-      conn.endUserId !== options.endUserId,
+      (
+        (options.endUserId !== undefined && conn.endUserId !== options.endUserId) ||
+        (options.endUserMetadata !== undefined && !sameMetadata(conn.endUserMetadata, options.endUserMetadata ?? null))
+      ),
     );
+
+    if (options.staticPolicy) conn.staticPolicy = options.staticPolicy;
+    if (options.endUserId !== undefined) conn.endUserId = options.endUserId;
+    if (options.endUserMetadata !== undefined) conn.endUserMetadata = options.endUserMetadata ?? null;
 
     await this.disconnectOtherCoaches(coach.id);
 
@@ -158,6 +169,7 @@ class ChessConvaiManager {
       } else {
         if (options.waitForBotReady) await this.waitForReady(conn, options.readyWaitMs ?? 3000);
         if (conn.connected && conn.staticPolicy) await this.seedStaticCoachPolicy(coach, conn.staticPolicy);
+        if (conn.connected) await this.ensureProfileMemory(conn);
         if (conn.connected && isBoardVisionEnabled() && !conn.boardVision && conn.client) {
           conn.boardVision = await publishBoardVisionTrack(conn.client);
         }
@@ -191,6 +203,7 @@ class ChessConvaiManager {
         apiKey,
         characterId: coach.characterId,
         endUserId: conn.endUserId || undefined,
+        endUserMetadata: conn.endUserMetadata || undefined,
         enableVideo: isBoardVisionEnabled(),
         enableLipsync: true,
         enableEmotion: true,
@@ -351,6 +364,7 @@ class ChessConvaiManager {
 
       if (conn.staticPolicy) await this.seedStaticCoachPolicy(coach, conn.staticPolicy);
       if (options.waitForBotReady) await this.waitForReady(conn, options.readyWaitMs ?? 5000);
+      await this.ensureProfileMemory(conn);
     } catch (err) {
       debugLog('Convai', `[${coach.name}] Connection failed:`, err);
     } finally {
@@ -411,6 +425,7 @@ class ChessConvaiManager {
           reconnectIfStale: true,
           staticPolicy: this.pool.get(coach.id)?.staticPolicy,
           endUserId: this.pool.get(coach.id)?.endUserId,
+          endUserMetadata: this.pool.get(coach.id)?.endUserMetadata ?? undefined,
         });
         if (options.preflightSilence !== false) {
           await this.waitForGlobalSilence(`${coach.name} turn preflight`, 150, 300);
@@ -436,6 +451,7 @@ class ChessConvaiManager {
               readyWaitMs: 3500,
               staticPolicy: conn.staticPolicy,
               endUserId: conn.endUserId,
+              endUserMetadata: conn.endUserMetadata ?? undefined,
             });
             if (stillRelevant()) {
               response = await this.sendContextTurn(coach, dynamicInfo, runLlm, options.maxWaitMs, options.waitForFullSpeech);
@@ -470,6 +486,7 @@ class ChessConvaiManager {
           reconnectIfStale: true,
           staticPolicy: this.pool.get(coach.id)?.staticPolicy,
           endUserId: this.pool.get(coach.id)?.endUserId,
+          endUserMetadata: this.pool.get(coach.id)?.endUserMetadata ?? undefined,
         });
         await this.waitForGlobalSilence(`${coach.name} turn preflight`, 150, 300);
         const genAtStart = this.speechWaitGeneration;
@@ -487,6 +504,7 @@ class ChessConvaiManager {
               readyWaitMs: 3500,
               staticPolicy: conn.staticPolicy,
               endUserId: conn.endUserId,
+              endUserMetadata: conn.endUserMetadata ?? undefined,
             });
             if (stillRelevant()) {
               response = await this.sendAndAwaitSpeech(coach, message, dynamicInfo);
@@ -525,8 +543,27 @@ class ChessConvaiManager {
     await this.connectCoach(coach, {
       staticPolicy: this.pool.get(coach.id)?.staticPolicy,
       endUserId: this.pool.get(coach.id)?.endUserId,
+      endUserMetadata: this.pool.get(coach.id)?.endUserMetadata ?? undefined,
     });
     await this.pushDynamicContext(coach, dynamicInfo, 'false');
+  }
+
+  async rememberGameSummary(coach: CoachConfig, memory: string): Promise<boolean> {
+    const conn = this.pool.get(coach.id);
+    const text = memory.trim();
+    const manager = conn?.client?.memoryManager;
+    if (!conn?.endUserId || !text || !manager?.addMemories) return false;
+    try {
+      const exists = await this.memoryExists(manager, text);
+      if (!exists) {
+        await manager.addMemories([text]);
+        debugLog('Convai', `[${coach.name}] Saved long-term memory: ${text}`);
+      }
+      return true;
+    } catch (err) {
+      debugLog('Convai', `[${coach.name}] Failed to save long-term memory:`, err);
+      return false;
+    }
   }
 
   refreshBoardVision(coach: CoachConfig, fen?: string): void {
@@ -546,12 +583,16 @@ class ChessConvaiManager {
     difficulty: DifficultyConfig,
     sessionId: string,
     startingDynamicInfo: string,
+    identity?: { endUserId: string; endUserMetadata?: Record<string, unknown> } | null,
   ): Promise<void> {
     const staticPolicy = buildCoachInstruction(coach, difficulty, 'move');
+    const endUserId = identity?.endUserId || sessionId;
+    const endUserMetadata = identity?.endUserMetadata ?? null;
     const conn = this.pool.get(coach.id);
     if (conn) {
       conn.staticPolicy = staticPolicy;
-      conn.endUserId = sessionId;
+      conn.endUserId = endUserId;
+      conn.endUserMetadata = endUserMetadata;
     }
 
     // New conversation: invalidate any speech turns still queued from the previous game and
@@ -564,7 +605,8 @@ class ChessConvaiManager {
     await this.connectCoach(coach, {
       waitForBotReady: true,
       readyWaitMs: 3500,
-      endUserId: sessionId,
+      endUserId,
+      endUserMetadata,
       staticPolicy,
       reconnectIfStale: false,
     });
@@ -579,7 +621,7 @@ class ChessConvaiManager {
 
     await this.seedStaticCoachPolicy(coach, staticPolicy);
     await this.pushDynamicContext(coach, startingDynamicInfo, 'false');
-    debugLog('Convai', `[${coach.name}] New game session=${sessionId}`);
+    debugLog('Convai', `[${coach.name}] New game session=${sessionId} endUserId=${endUserId}`);
   }
 
   interruptBot(coach: CoachConfig): void {
@@ -965,6 +1007,7 @@ class ChessConvaiManager {
         readyWaitMs: 3500,
         staticPolicy: conn.staticPolicy,
         endUserId: conn.endUserId,
+        endUserMetadata: conn.endUserMetadata ?? undefined,
       });
     }
 
@@ -1262,6 +1305,55 @@ class ChessConvaiManager {
 
   private isReadyStale(conn: CoachConnection): boolean {
     return conn.connected && !conn.botReady && conn.connectedAt > 0 && Date.now() - conn.connectedAt >= this.staleReadyMs;
+  }
+
+  private async ensureProfileMemory(conn: CoachConnection): Promise<void> {
+    const name = typeof conn.endUserMetadata?.name === 'string' ? conn.endUserMetadata.name.trim() : '';
+    const manager = conn.client?.memoryManager;
+    if (!conn.endUserId || !name || !manager?.addMemories) return;
+
+    const memory = `The student's name is ${name}.`;
+    const key = `${conn.coach.characterId}:${conn.endUserId}:${memory}`;
+    if (conn.profileMemoryKey === key) return;
+
+    try {
+      const exists = await this.memoryExists(manager, memory);
+      if (!exists) await manager.addMemories([memory]);
+      conn.profileMemoryKey = key;
+      debugLog('Convai', `[${conn.coach.name}] Profile memory ready for ${conn.endUserId}`);
+    } catch (err) {
+      debugLog('Convai', `[${conn.coach.name}] Profile memory skipped:`, err);
+    }
+  }
+
+  private async memoryExists(manager: any, text: string): Promise<boolean> {
+    if (typeof manager.listMemories !== 'function') return false;
+    try {
+      const result = await manager.listMemories({ limit: 100 });
+      const items = Array.isArray(result)
+        ? result
+        : Array.isArray(result?.memories)
+          ? result.memories
+          : Array.isArray(result?.items)
+            ? result.items
+            : Array.isArray(result?.data)
+              ? result.data
+              : [];
+      const needle = text.toLowerCase();
+      return items.some((item: unknown) => {
+        if (typeof item === 'string') return item.toLowerCase() === needle;
+        if (!item || typeof item !== 'object') return false;
+        const value = String(
+          (item as { text?: unknown; memory?: unknown; content?: unknown }).text ??
+          (item as { text?: unknown; memory?: unknown; content?: unknown }).memory ??
+          (item as { text?: unknown; memory?: unknown; content?: unknown }).content ??
+          '',
+        );
+        return value.toLowerCase() === needle;
+      });
+    } catch {
+      return false;
+    }
   }
 
   private getSuppressedResponseWord(text: string): string | null {
