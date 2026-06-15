@@ -41,12 +41,6 @@ import {
 import type { MoveRecord } from './types';
 
 const DATASET_TOOLS_ENABLED = __DATASET_TOOLS_ENABLED__;
-const LOADING_SETTLE_MS = 800;
-const POST_REVEAL_WELCOME_MS = 900;
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => window.setTimeout(resolve, ms));
-}
 
 const FILES = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'];
 const PIECES: Record<string, string> = {
@@ -357,15 +351,13 @@ function App() {
       gameReadyResolverRef.current = null;
     } else {
       debugLog('App', `Coach connected — finishing game setup before revealing board`);
-      advanceLoading(4, 88, `Setting up your game with ${selectedCoach.name}...`);
+      advanceLoading(4, 92, `${selectedCoach.name} is about to speak...`);
       await Promise.race([
         gameReady,
         new Promise<void>((resolve) => window.setTimeout(resolve, 22000)),
       ]);
       gameReadyResolverRef.current = null;
     }
-    advanceLoading(5, 100, 'Taking your seat...');
-    await sleep(LOADING_SETTLE_MS);
     setScreen('game');
   }
 
@@ -527,7 +519,6 @@ function ChessGame({
   const analysisStartedRef = useRef(false);
   const gameOverHandledRef = useRef(false);
   const welcomeSpokenRef = useRef(false);
-  const welcomePendingRef = useRef<string | null>(null);
   const [welcomeDelivered, setWelcomeDelivered] = useState(false);
   const moveListRef = useRef<HTMLOListElement | null>(null);
   const prevThinkingRef = useRef(false);
@@ -634,33 +625,38 @@ function ChessGame({
     const openingInfo = addStudentContext(buildDynamicCoachInfo(freshGame, null, null, coach, difficulty), userIdentity);
     const welcomeInfo = addStudentContext(buildWelcomeDynamicInfo(freshGame, coach, difficulty, sessionIdRef.current), userIdentity);
     void (async () => {
-      await chessConvai.beginNewGame(
-        coach,
-        difficulty,
-        sessionIdRef.current,
-        openingInfo,
-        userIdentity,
-      );
-      welcomePendingRef.current = welcomeInfo;
-      onGameReady?.();
-    })();
-  }, [isCovered, convaiStatus.botReady, coach, difficulty, userIdentity, onGameReady]);
+      let peeled = false;
+      const peelLoading = () => {
+        if (peeled) return;
+        peeled = true;
+        onGameReady?.();
+      };
 
-  useEffect(() => {
-    if (isCovered) return;
-    const welcomeInfo = welcomePendingRef.current;
-    if (!welcomeInfo) return;
-    welcomePendingRef.current = null;
-    void (async () => {
+      const unsubResponse = chessConvai.onResponse((response) => {
+        if (response.coachId === coach.id && response.text.trim()) peelLoading();
+      });
+      const unsubStatus = chessConvai.onStatus((status) => {
+        if (status.activeCoachId === coach.id && status.speaking) peelLoading();
+      });
+
       try {
-        await sleep(POST_REVEAL_WELCOME_MS);
-        const spoken = await chessConvai.speakWelcome(coach, welcomeInfo);
+        const spoken = await chessConvai.beginNewGame(
+          coach,
+          difficulty,
+          sessionIdRef.current,
+          openingInfo,
+          userIdentity,
+          welcomeInfo,
+        );
         if (spoken) setCoachLine(spoken);
       } finally {
+        unsubResponse();
+        unsubStatus();
+        peelLoading();
         setWelcomeDelivered(true);
       }
     })();
-  }, [isCovered, coach]);
+  }, [isCovered, convaiStatus.botReady, coach, difficulty, userIdentity, onGameReady]);
 
   useEffect(() => {
     if (isCovered || !welcomeDelivered) return;
@@ -780,7 +776,6 @@ function ChessGame({
     analysisStartedRef.current = false;
     gameOverHandledRef.current = false;
     welcomeSpokenRef.current = false;
-    welcomePendingRef.current = null;
     setWelcomeDelivered(false);
     spokenReasonsRef.current.clear();
     const freshGame = new Chess();
