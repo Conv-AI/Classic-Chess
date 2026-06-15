@@ -6,6 +6,7 @@ import type { CoachId } from './coachConfig';
 import { chessConvai } from './convaiManager';
 import { applyCC4TeethMotion, decayCC4TeethMotion } from './cc4TeethMotion';
 import { debugLog } from './debugLog';
+import { sanitizePortraitIdleClip } from './sanitizeIdleClip';
 
 const MATERIAL_TUNING = {
   hairAlphaTest: 0.16,
@@ -307,7 +308,11 @@ export default function ReallusionCharacter({ coachId, assetName, charUrl, animU
   const gltf = useGLTF(charUrl) as any;
   const { scene } = gltf;
   const { animations } = useGLTF(animUrl);
-  const { actions } = useAnimations(animations, groupRef);
+  const portraitAnimations = useMemo(
+    () => animations.map((clip) => sanitizePortraitIdleClip(clip, assetName)),
+    [animations, assetName],
+  );
+  const { actions } = useAnimations(portraitAnimations, groupRef);
 
   useMemo(() => {
     if (gltf?.parser?.json) recoverMorphTargetNames(scene, gltf.parser.json);
