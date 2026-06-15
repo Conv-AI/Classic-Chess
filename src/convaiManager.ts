@@ -1,10 +1,25 @@
+import {
+  registerKnownEndUserId,
+  resolveConvaiConnectionEndUserId,
+  type UserIdentity,
+  usesConvaiLongTermMemory,
+} from './auth';
 import { buildCoachInstruction } from './chessAi';
 import { isBoardVisionEnabled, publishBoardVisionTrack, type BoardVisionSession } from './boardVision';
 import { getConvaiApiKey } from './convaiApiKey';
-import { COACHES, type CoachConfig, type CoachId, type DifficultyConfig } from './coachConfig';
+import { deleteAllEndUsers, isMauLimitError } from './convaiEndUsers';
+import {
+  COACHES,
+  resolveConvaiCharacterId,
+  type CoachConfig,
+  type CoachId,
+  type DifficultyConfig,
+} from './coachConfig';
 import { debugLog } from './debugLog';
 const SUPPRESSED_RESPONSE_PATTERN = /^\s*(silent|human):?\s*[.!?]*\s*$/i;
 const PROMPT_LEAK_PATTERN = /^\s*(human|system|user)\s*:/i;
+const MIN_SPEECH_WAIT_MS = 7000;
+const WELCOME_TURN_BUDGET_MS = 20000;
 
 export type ConvaiResponse = {
   coachId: CoachId;
@@ -48,8 +63,12 @@ type CoachConnection = {
   staticPolicy: string;
   endUserId: string;
   endUserMetadata: Record<string, unknown> | null;
+  ltmEnabled: boolean;
+  activeCharacterId: string;
   profileMemoryKey: string;
   boardVision: BoardVisionSession | null;
+  lastConnectError: string;
+  ltmRecoveryAttempted: boolean;
 };
 
 function createConnection(coach: CoachConfig): CoachConnection {
@@ -84,8 +103,12 @@ function createConnection(coach: CoachConfig): CoachConnection {
     staticPolicy: '',
     endUserId: '',
     endUserMetadata: null,
+    ltmEnabled: false,
+    activeCharacterId: '',
     profileMemoryKey: '',
     boardVision: null,
+    lastConnectError: '',
+    ltmRecoveryAttempted: false,
   };
 }
 
@@ -116,9 +139,35 @@ class ChessConvaiManager {
   private latestChatSeq = 0;
   private userTranscript = '';
   private transcriptListeners = new Set<(text: string) => void>();
+  private globalEndUserId = '';
+  private globalEndUserMetadata: Record<string, unknown> | null = null;
+  private globalLtmEnabled = false;
 
   constructor() {
     for (const coach of COACHES) this.pool.set(coach.id, createConnection(coach));
+  }
+
+  syncEndUserIdentity(identity: UserIdentity | null | undefined): void {
+    this.globalLtmEnabled = usesConvaiLongTermMemory(identity);
+    this.globalEndUserId = resolveConvaiConnectionEndUserId(identity);
+    this.globalEndUserMetadata = this.globalLtmEnabled ? identity?.endUserMetadata ?? null : null;
+    this.applyEndUserIdentityToPool();
+    if (this.globalLtmEnabled) {
+      debugLog('Convai', `Long-term memory enabled for endUserId=${this.globalEndUserId}`);
+    } else {
+      debugLog(
+        'Convai',
+        `Guest session — endUserId=${this.globalEndUserId} (stable per browser, no app-side LTM writes)`,
+      );
+    }
+  }
+
+  private applyEndUserIdentityToPool(): void {
+    for (const conn of this.pool.values()) {
+      conn.endUserId = this.globalEndUserId;
+      conn.endUserMetadata = this.globalEndUserMetadata;
+      conn.ltmEnabled = this.globalLtmEnabled;
+    }
   }
 
   private ensureConnection(coach: CoachConfig): CoachConnection {
@@ -146,17 +195,25 @@ class ChessConvaiManager {
     this.activeCoachId = coach.id as CoachId;
     const conn = this.ensureConnection(coach);
 
+    const targetCharacterId = resolveConvaiCharacterId(coach, this.globalLtmEnabled);
     const needsReconnectForUser = Boolean(
       conn.connected &&
       (
+        conn.activeCharacterId !== targetCharacterId ||
         (options.endUserId !== undefined && conn.endUserId !== options.endUserId) ||
         (options.endUserMetadata !== undefined && !sameMetadata(conn.endUserMetadata, options.endUserMetadata ?? null))
       ),
     );
 
     if (options.staticPolicy) conn.staticPolicy = options.staticPolicy;
-    if (options.endUserId !== undefined) conn.endUserId = options.endUserId;
-    if (options.endUserMetadata !== undefined) conn.endUserMetadata = options.endUserMetadata ?? null;
+    if (options.endUserMetadata !== undefined) {
+      this.globalEndUserMetadata = options.endUserMetadata ?? null;
+    }
+    if (options.endUserId !== undefined) {
+      this.globalEndUserId = options.endUserId.trim();
+      if (this.globalEndUserId) registerKnownEndUserId(this.globalEndUserId);
+    }
+    this.applyEndUserIdentityToPool();
 
     await this.disconnectOtherCoaches(coach.id);
 
@@ -193,29 +250,82 @@ class ChessConvaiManager {
 
     conn.connecting = true;
     this.emitStatus();
+    conn.lastConnectError = '';
 
     try {
-      debugLog('Convai', `[${coach.name}] Connecting (${coach.characterId})...`);
-      const sdk = await import('@convai/web-sdk/vanilla');
-      const { ConvaiClient, AudioRenderer } = sdk;
+      await this.establishConvaiSession(coach, conn, options, apiKey);
+      conn.ltmRecoveryAttempted = false;
+    } catch (err) {
+      const message = String((err as { message?: string })?.message ?? conn.lastConnectError ?? err ?? '');
+      if (conn.client || conn.unsubFns.length > 0) {
+        await this.disconnectOne(conn);
+      }
 
-      const client = new ConvaiClient({
-        apiKey,
-        characterId: coach.characterId,
-        endUserId: conn.endUserId || undefined,
-        endUserMetadata: conn.endUserMetadata || undefined,
-        enableVideo: isBoardVisionEnabled(),
-        enableLipsync: true,
-        enableEmotion: true,
-        blendshapeConfig: { format: 'arkit', frames_buffer_duration: 0.25 },
-        ttsEnabled: true,
-        startWithAudioOn: false,
-        keepInContext: true,
-        dynamicInfo: conn.staticPolicy || undefined,
-      });
+      if (isMauLimitError(message) && !conn.ltmRecoveryAttempted) {
+        conn.ltmRecoveryAttempted = true;
+        debugLog('Convai', `[${coach.name}] MAU limit reached — deleting all end users and retrying once`);
+        const { deleted, failed } = await deleteAllEndUsers([conn.endUserId, this.globalEndUserId]);
+        debugLog('Convai', `[${coach.name}] MAU cleanup complete — deleted=${deleted} failed=${failed}`);
+        conn.lastConnectError = '';
+        try {
+          await this.establishConvaiSession(coach, conn, options, apiKey);
+          conn.ltmRecoveryAttempted = false;
+        } catch (retryErr) {
+          const retryMessage = String(
+            (retryErr as { message?: string })?.message ?? conn.lastConnectError ?? retryErr ?? '',
+          );
+          if (conn.client || conn.unsubFns.length > 0) {
+            await this.disconnectOne(conn);
+          }
+          debugLog('Convai', `[${coach.name}] Connection failed after MAU cleanup:`, retryMessage || retryErr);
+        }
+      } else {
+        debugLog('Convai', `[${coach.name}] Connection failed:`, message || err);
+      }
+    } finally {
+      conn.connecting = false;
+      this.emitStatus();
+    }
+  }
 
-      conn.unsubFns.push(
-        client.on('message', (msg: any) => {
+  private async establishConvaiSession(
+    coach: CoachConfig,
+    conn: CoachConnection,
+    options: {
+      waitForBotReady?: boolean;
+      readyWaitMs?: number;
+    },
+    apiKey: string,
+  ): Promise<void> {
+    const characterId = resolveConvaiCharacterId(coach, conn.ltmEnabled);
+    const endUserId = conn.endUserId || undefined;
+    const usingGuestClone = !conn.ltmEnabled && Boolean(coach.guestCharacterId?.trim());
+    debugLog(
+      'Convai',
+      `[${coach.name}] Connecting character=${characterId} endUserId=${endUserId}${
+        conn.ltmEnabled ? ' (LTM on)' : ' (guest, no LTM writes)'
+      }${usingGuestClone ? ' [guest clone]' : ''}...`,
+    );
+    const sdk = await import('@convai/web-sdk/vanilla');
+    const { ConvaiClient, AudioRenderer } = sdk;
+
+    const client = new ConvaiClient({
+      apiKey,
+      characterId,
+      endUserId,
+      endUserMetadata: conn.ltmEnabled ? conn.endUserMetadata || undefined : undefined,
+      enableVideo: isBoardVisionEnabled(),
+      enableLipsync: true,
+      enableEmotion: true,
+      blendshapeConfig: { format: 'arkit', frames_buffer_duration: 0.25 },
+      ttsEnabled: true,
+      startWithAudioOn: false,
+      keepInContext: true,
+      dynamicInfo: conn.staticPolicy || undefined,
+    });
+
+    conn.unsubFns.push(
+      client.on('message', (msg: any) => {
           const type: string = msg?.type ?? 'unknown';
           const content: string = msg?.content ?? '';
           if (type !== 'bot-llm-text') {
@@ -299,7 +409,20 @@ class ChessConvaiManager {
       }));
 
       conn.unsubFns.push(client.on('error', (err: any) => {
-        debugLog('Convai', `[${coach.name}] error:`, err?.message || err);
+        const message = String(err?.message || err || '');
+        conn.lastConnectError = message;
+        debugLog('Convai', `[${coach.name}] error:`, message);
+        if (/missing end_user_id/i.test(message)) {
+          debugLog(
+            'Convai',
+            `[${coach.name}] Guest play requires LTM disabled on this Convai character, or a separate guest clone via VITE_CONVAI_GUEST_CHARACTER_${String(coach.id).toUpperCase()}.`,
+          );
+        } else if (isMauLimitError(message)) {
+          debugLog(
+            'Convai',
+            `[${coach.name}] MAU limit reached — will delete all end users and retry once.`,
+          );
+        }
       }));
 
       conn.unsubFns.push(client.on('turnEnd', (payload: any) => {
@@ -341,7 +464,11 @@ class ChessConvaiManager {
       }));
 
       await client.connect();
+      if (isMauLimitError(conn.lastConnectError) || /missing end_user_id/i.test(conn.lastConnectError)) {
+        throw new Error(conn.lastConnectError);
+      }
       conn.client = client;
+      conn.activeCharacterId = characterId;
       conn.connected = true;
       conn.connectedAt = Date.now();
 
@@ -362,15 +489,9 @@ class ChessConvaiManager {
         });
       }, 1500);
 
-      if (conn.staticPolicy) await this.seedStaticCoachPolicy(coach, conn.staticPolicy);
-      if (options.waitForBotReady) await this.waitForReady(conn, options.readyWaitMs ?? 5000);
-      await this.ensureProfileMemory(conn);
-    } catch (err) {
-      debugLog('Convai', `[${coach.name}] Connection failed:`, err);
-    } finally {
-      conn.connecting = false;
-      this.emitStatus();
-    }
+    if (conn.staticPolicy) await this.seedStaticCoachPolicy(coach, conn.staticPolicy);
+    if (options.waitForBotReady) await this.waitForReady(conn, options.readyWaitMs ?? 5000);
+    await this.ensureProfileMemory(conn);
   }
 
   unlockAudio(): void {
@@ -404,7 +525,7 @@ class ChessConvaiManager {
   async runCoachTurn(
     coach: CoachConfig,
     dynamicInfo: string,
-    options: { runLlm?: RunLlmMode; preflightSilence?: boolean; maxWaitMs?: number; waitForFullSpeech?: boolean; guard?: () => boolean } = {},
+    options: { runLlm?: RunLlmMode; preflightSilence?: boolean; maxWaitMs?: number; waitForFullSpeech?: boolean; guard?: () => boolean; skipConnect?: boolean } = {},
   ): Promise<string> {
     const runLlm = options.runLlm ?? 'auto';
     const startEpoch = this.conversationEpoch;
@@ -419,14 +540,16 @@ class ChessConvaiManager {
       this.emitStatus();
       try {
         this.activeCoachId = coach.id;
-        await this.connectCoach(coach, {
-          waitForBotReady: true,
-          readyWaitMs: 3500,
-          reconnectIfStale: true,
-          staticPolicy: this.pool.get(coach.id)?.staticPolicy,
-          endUserId: this.pool.get(coach.id)?.endUserId,
-          endUserMetadata: this.pool.get(coach.id)?.endUserMetadata ?? undefined,
-        });
+        if (!options.skipConnect) {
+          await this.connectCoach(coach, {
+            waitForBotReady: true,
+            readyWaitMs: 3500,
+            reconnectIfStale: true,
+            staticPolicy: this.pool.get(coach.id)?.staticPolicy,
+            endUserId: this.pool.get(coach.id)?.endUserId,
+            endUserMetadata: this.pool.get(coach.id)?.endUserMetadata ?? undefined,
+          });
+        }
         if (options.preflightSilence !== false) {
           await this.waitForGlobalSilence(`${coach.name} turn preflight`, 150, 300);
         }
@@ -552,7 +675,7 @@ class ChessConvaiManager {
     const conn = this.pool.get(coach.id);
     const text = memory.trim();
     const manager = conn?.client?.memoryManager;
-    if (!conn?.endUserId || !text || !manager?.addMemories) return false;
+    if (!conn?.ltmEnabled || !text || !manager?.addMemories) return false;
     try {
       const exists = await this.memoryExists(manager, text);
       if (!exists) {
@@ -583,16 +706,16 @@ class ChessConvaiManager {
     difficulty: DifficultyConfig,
     sessionId: string,
     startingDynamicInfo: string,
-    identity?: { endUserId: string; endUserMetadata?: Record<string, unknown> } | null,
-  ): Promise<void> {
+    identity?: UserIdentity | null,
+    welcomeDynamicInfo?: string,
+  ): Promise<string> {
     const staticPolicy = buildCoachInstruction(coach, difficulty, 'move');
-    const endUserId = identity?.endUserId || sessionId;
-    const endUserMetadata = identity?.endUserMetadata ?? null;
+    this.syncEndUserIdentity(identity);
+    const endUserId = this.globalEndUserId;
+    const endUserMetadata = this.globalEndUserMetadata;
     const conn = this.pool.get(coach.id);
     if (conn) {
       conn.staticPolicy = staticPolicy;
-      conn.endUserId = endUserId;
-      conn.endUserMetadata = endUserMetadata;
     }
 
     // New conversation: invalidate any speech turns still queued from the previous game and
@@ -612,7 +735,7 @@ class ChessConvaiManager {
     });
 
     const readyConn = this.pool.get(coach.id);
-    if (!readyConn?.client) return;
+    if (!readyConn?.client) return '';
 
     try { readyConn.client.resetSession?.(); } catch {}
     try {
@@ -621,7 +744,73 @@ class ChessConvaiManager {
 
     await this.seedStaticCoachPolicy(coach, staticPolicy);
     await this.pushDynamicContext(coach, startingDynamicInfo, 'false');
-    debugLog('Convai', `[${coach.name}] New game session=${sessionId} endUserId=${endUserId}`);
+    debugLog(
+      'Convai',
+      `[${coach.name}] New game session=${sessionId} endUserId=${endUserId}${this.globalLtmEnabled ? ' (LTM on)' : ' (guest, LTM off)'}`,
+    );
+
+    if (!welcomeDynamicInfo?.trim()) return '';
+
+    return this.runExclusiveSpeech(async () => {
+      this.convaiTurnInFlight = true;
+      this.emitStatus();
+      try {
+        return await this.deliverWelcomeLine(coach, welcomeDynamicInfo);
+      } finally {
+        this.convaiTurnInFlight = false;
+        this.emitStatus();
+      }
+    });
+  }
+
+  private async deliverWelcomeLine(coach: CoachConfig, welcomeDynamicInfo: string): Promise<string> {
+    const conn = this.pool.get(coach.id);
+    if (!conn?.client || !conn.connected) return '';
+
+    await this.waitForReady(conn, 2000);
+    const genAtStart = this.speechWaitGeneration;
+    let response = await this.sendContextTurn(
+      coach,
+      welcomeDynamicInfo,
+      'true',
+      WELCOME_TURN_BUDGET_MS,
+      true,
+    );
+
+    const afterTurn = this.pool.get(coach.id);
+    if (
+      !response.trim() &&
+      afterTurn &&
+      !afterTurn.llmNoResponse &&
+      !afterTurn.responseSuppressed &&
+      this.speechWaitGeneration === genAtStart
+    ) {
+      debugLog('Convai', `[${coach.name}] Welcome line empty; reconnecting once`);
+      const retryPolicy = afterTurn.staticPolicy;
+      const retryEndUserId = afterTurn.endUserId;
+      const retryMetadata = afterTurn.endUserMetadata;
+      await this.disconnectOne(afterTurn);
+      await this.connectCoach(coach, {
+        waitForBotReady: true,
+        readyWaitMs: 3500,
+        staticPolicy: retryPolicy,
+        endUserId: retryEndUserId,
+        endUserMetadata: retryMetadata ?? undefined,
+        reconnectIfStale: false,
+      });
+      if (this.speechWaitGeneration === genAtStart) {
+        response = await this.sendContextTurn(
+          coach,
+          welcomeDynamicInfo,
+          'true',
+          WELCOME_TURN_BUDGET_MS,
+          true,
+        );
+      }
+    }
+
+    const finalConn = this.pool.get(coach.id);
+    return finalConn ? this.getBestResponseText(finalConn) || response : response;
   }
 
   interruptBot(coach: CoachConfig): void {
@@ -650,7 +839,13 @@ class ChessConvaiManager {
   }
 
   async speakWelcome(coach: CoachConfig, dynamicInfo: string): Promise<string> {
-    return this.runCoachTurn(coach, dynamicInfo, { runLlm: 'true', preflightSilence: false, waitForFullSpeech: true, maxWaitMs: 12000 });
+    return this.runCoachTurn(coach, dynamicInfo, {
+      runLlm: 'true',
+      preflightSilence: false,
+      waitForFullSpeech: true,
+      maxWaitMs: WELCOME_TURN_BUDGET_MS,
+      skipConnect: true,
+    });
   }
 
   async speakGameOver(coach: CoachConfig, dynamicInfo: string): Promise<string> {
@@ -982,13 +1177,13 @@ class ChessConvaiManager {
     const turnStart = Date.now();
     const remainingBudget = () => Math.max(0, turnBudgetMs - (Date.now() - turnStart));
     const textBudgetMs = requireFullSpeech
-      ? Math.min(10000, remainingBudget())
+      ? Math.max(4000, remainingBudget() - MIN_SPEECH_WAIT_MS)
       : remainingBudget();
 
     const isAutoContextTurn = runLlm === 'auto';
     const response = await this.waitForResponseCompletion(readyConn, isAutoContextTurn, textBudgetMs, requireFullSpeech);
     if (requireFullSpeech && response.trim()) {
-      const speechBudget = Math.max(remainingBudget(), 4000);
+      const speechBudget = Math.max(remainingBudget(), MIN_SPEECH_WAIT_MS);
       await this.waitUntilSpeechFinished(coach, speechBudget);
     }
     return response;
@@ -1310,7 +1505,7 @@ class ChessConvaiManager {
   private async ensureProfileMemory(conn: CoachConnection): Promise<void> {
     const name = typeof conn.endUserMetadata?.name === 'string' ? conn.endUserMetadata.name.trim() : '';
     const manager = conn.client?.memoryManager;
-    if (!conn.endUserId || !name || !manager?.addMemories) return;
+    if (!conn.ltmEnabled || !name || !manager?.addMemories) return;
 
     const memory = `The student's name is ${name}.`;
     const key = `${conn.coach.characterId}:${conn.endUserId}:${memory}`;

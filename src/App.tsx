@@ -4,7 +4,7 @@ import { Chess, type Move, type Square } from 'chess.js';
 import { ChevronsLeft, ChevronsRight, ChevronLeft, ChevronRight, Clipboard } from 'lucide-react';
 import { analyzeGame } from './analysis';
 import AuthButton from './AuthButton';
-import { authUserToIdentity, type AuthUser, type UserIdentity } from './auth';
+import { authUserToIdentity, fetchAuthUser, getCachedAuthUser, resolveConvaiConnectionEndUserId, type AuthUser, type UserIdentity } from './auth';
 import ApiKeyModal from './ApiKeyModal';
 import ChatDrawer from './ChatDrawer';
 import { getCoach, getDifficulty, type CoachId, type DifficultyConfig, type DifficultyId } from './coachConfig';
@@ -41,6 +41,12 @@ import {
 import type { MoveRecord } from './types';
 
 const DATASET_TOOLS_ENABLED = __DATASET_TOOLS_ENABLED__;
+const LOADING_SETTLE_MS = 800;
+const POST_REVEAL_WELCOME_MS = 900;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
 
 const FILES = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'];
 const PIECES: Record<string, string> = {
@@ -242,14 +248,37 @@ function App() {
   const [loadingProgress, setLoadingProgress] = useState(0);
   const [loadingStep, setLoadingStep] = useState('Setting up the board...');
   const avatarReadyResolverRef = useRef<(() => void) | null>(null);
+  const gameReadyResolverRef = useRef<(() => void) | null>(null);
+  const loadingPhaseRef = useRef(0);
   const [sessions, setSessions] = useState<StoredGameSession[]>(() => loadSessions());
   const [apiKeyModalOpen, setApiKeyModalOpen] = useState(() => !hasConvaiApiKey());
   const [apiKeyVersion, setApiKeyVersion] = useState(0);
-  const [authUser, setAuthUser] = useState<AuthUser | null>(null);
+  const [authUser, setAuthUser] = useState<AuthUser | null>(() => getCachedAuthUser());
   const userIdentity = useMemo(() => authUserToIdentity(authUser), [authUser]);
   const handleAuthUserChange = useCallback((user: AuthUser | null) => {
     setAuthUser(user);
+    chessConvai.syncEndUserIdentity(authUserToIdentity(user));
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    void fetchAuthUser()
+      .then((user) => {
+        if (!cancelled) {
+          setAuthUser(user);
+          chessConvai.syncEndUserIdentity(authUserToIdentity(user));
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          const cached = getCachedAuthUser();
+          setAuthUser(cached);
+          chessConvai.syncEndUserIdentity(authUserToIdentity(cached));
+        }
+      });
+    return () => { cancelled = true; };
+  }, []);
+
   const coach = getCoach(coachId);
 
   const handleCoachingControlModeChange = useCallback((mode: CoachingControlMode) => {
@@ -258,21 +287,36 @@ function App() {
     debugLog('App', `coachingControlMode -> ${mode}`);
   }, []);
 
+  const handleCoachAvatarReady = useCallback(() => {
+    avatarReadyResolverRef.current?.();
+    avatarReadyResolverRef.current = null;
+  }, []);
+
+  const handleGameReady = useCallback(() => {
+    gameReadyResolverRef.current?.();
+    gameReadyResolverRef.current = null;
+  }, []);
+
+  const advanceLoading = useCallback((phase: number, progress: number, step: string) => {
+    if (phase < loadingPhaseRef.current) return;
+    loadingPhaseRef.current = phase;
+    setLoadingProgress(progress);
+    setLoadingStep(step);
+  }, []);
+
   useEffect(() => {
     return chessConvai.onStatus((status) => {
       if (status.activeCoachId !== coachId) return;
+      if (screen !== 'loading' || loadingPhaseRef.current >= 4) return;
       if (status.botReady) {
-        setLoadingProgress(100);
-        setLoadingStep(`${coach.name} is ready.`);
+        advanceLoading(3, 80, `Getting ${coach.name} ready...`);
       } else if (status.connected) {
-        setLoadingProgress(78);
-        setLoadingStep(`Waiting for ${coach.name} to finish warming up...`);
+        advanceLoading(2, 72, `Warming up ${coach.name}...`);
       } else if (status.connecting) {
-        setLoadingProgress(45);
-        setLoadingStep(`Connecting ${coach.name} to Convai...`);
+        advanceLoading(1, 45, `Connecting ${coach.name}...`);
       }
     });
-  }, [coach.name, coachId]);
+  }, [coach.name, coachId, screen, advanceLoading]);
 
   async function startQuickPlay() {
     if (!hasConvaiApiKey()) {
@@ -283,27 +327,46 @@ function App() {
     chessConvai.unlockAudio();
     const selectedCoach = coach;
     setScreen('loading');
-    setLoadingProgress(18);
-    setLoadingStep(`Loading ${selectedCoach.name} and the chess room...`);
+    loadingPhaseRef.current = 0;
+    advanceLoading(1, 18, `Loading ${selectedCoach.name} and the chess room...`);
     const avatarReady = new Promise<void>((resolve) => {
       avatarReadyResolverRef.current = resolve;
     });
     debugLog('App', `Awaiting connectCoach + avatar prewarm for ${selectedCoach.name}`);
+    const gameReady = new Promise<void>((resolve) => {
+      gameReadyResolverRef.current = resolve;
+    });
     const staticPolicy = buildCoachInstruction(selectedCoach, getDifficulty(difficultyId), 'move');
     await Promise.all([
       chessConvai.connectCoach(selectedCoach, {
         staticPolicy,
         waitForBotReady: true,
         readyWaitMs: 5000,
-        endUserId: userIdentity?.endUserId,
+        endUserId: resolveConvaiConnectionEndUserId(userIdentity),
         endUserMetadata: userIdentity?.endUserMetadata,
       }),
       avatarReady,
     ]);
-    debugLog('App', `Coach and avatar ready — transitioning to game`);
-    setLoadingProgress(100);
-    setLoadingStep(`${selectedCoach.name} is ready.`);
-    window.setTimeout(() => setScreen('game'), 450);
+    const convaiStatus = chessConvai.getStatus();
+    if (!convaiStatus.connected || !convaiStatus.botReady) {
+      debugLog(
+        'App',
+        `Convai not ready for ${selectedCoach.name} — connected=${convaiStatus.connected} botReady=${convaiStatus.botReady}. Starting game without voice.`,
+      );
+      gameReadyResolverRef.current?.();
+      gameReadyResolverRef.current = null;
+    } else {
+      debugLog('App', `Coach connected — finishing game setup before revealing board`);
+      advanceLoading(4, 88, `Setting up your game with ${selectedCoach.name}...`);
+      await Promise.race([
+        gameReady,
+        new Promise<void>((resolve) => window.setTimeout(resolve, 22000)),
+      ]);
+      gameReadyResolverRef.current = null;
+    }
+    advanceLoading(5, 100, 'Taking your seat...');
+    await sleep(LOADING_SETTLE_MS);
+    setScreen('game');
   }
 
   const refreshSessions = useCallback(() => {
@@ -325,10 +388,8 @@ function App() {
             setScreen('menu');
           }}
           onSessionsChanged={refreshSessions}
-          onCoachReady={() => {
-            avatarReadyResolverRef.current?.();
-            avatarReadyResolverRef.current = null;
-          }}
+          onCoachReady={handleCoachAvatarReady}
+          onGameReady={handleGameReady}
           key={`game-${coachId}-${coachingControlMode}`}
         />
         {screen === 'loading' && (
@@ -384,7 +445,6 @@ function App() {
   return (
     <>
       {body}
-      {screen !== 'menu' && <AuthButton user={authUser} onUserChange={handleAuthUserChange} />}
       <ApiKeyModal
         open={apiKeyModalOpen}
         required={!hasConvaiApiKey()}
@@ -436,6 +496,7 @@ function ChessGame({
   onBackToMenu,
   onSessionsChanged,
   onCoachReady,
+  onGameReady,
   isCovered = false,
 }: {
   coachId: CoachId;
@@ -445,6 +506,7 @@ function ChessGame({
   onBackToMenu: () => void;
   onSessionsChanged: () => void;
   onCoachReady?: () => void;
+  onGameReady?: () => void;
   isCovered?: boolean;
 }) {
   const coach = getCoach(coachId);
@@ -465,6 +527,8 @@ function ChessGame({
   const analysisStartedRef = useRef(false);
   const gameOverHandledRef = useRef(false);
   const welcomeSpokenRef = useRef(false);
+  const welcomePendingRef = useRef<string | null>(null);
+  const [welcomeDelivered, setWelcomeDelivered] = useState(false);
   const moveListRef = useRef<HTMLOListElement | null>(null);
   const prevThinkingRef = useRef(false);
   const [yourTurnPulse, setYourTurnPulse] = useState(false);
@@ -563,21 +627,43 @@ function ChessGame({
   }, [convaiStatus.speaking, recentCoachSpeech]);
 
   useEffect(() => {
-    if (isCovered || welcomeSpokenRef.current) return;
+    if (!isCovered || welcomeSpokenRef.current) return;
     if (!convaiStatus.botReady) return;
     welcomeSpokenRef.current = true;
     const freshGame = new Chess();
     const openingInfo = addStudentContext(buildDynamicCoachInfo(freshGame, null, null, coach, difficulty), userIdentity);
     const welcomeInfo = addStudentContext(buildWelcomeDynamicInfo(freshGame, coach, difficulty, sessionIdRef.current), userIdentity);
     void (async () => {
-      await chessConvai.beginNewGame(coach, difficulty, sessionIdRef.current, openingInfo, userIdentity);
-      const spoken = await chessConvai.speakWelcome(coach, welcomeInfo);
-      if (spoken) setCoachLine(spoken);
+      await chessConvai.beginNewGame(
+        coach,
+        difficulty,
+        sessionIdRef.current,
+        openingInfo,
+        userIdentity,
+      );
+      welcomePendingRef.current = welcomeInfo;
+      onGameReady?.();
     })();
-  }, [isCovered, convaiStatus.botReady, coach, difficulty, userIdentity]);
+  }, [isCovered, convaiStatus.botReady, coach, difficulty, userIdentity, onGameReady]);
 
   useEffect(() => {
-    if (isCovered || !welcomeSpokenRef.current) return;
+    if (isCovered) return;
+    const welcomeInfo = welcomePendingRef.current;
+    if (!welcomeInfo) return;
+    welcomePendingRef.current = null;
+    void (async () => {
+      try {
+        await sleep(POST_REVEAL_WELCOME_MS);
+        const spoken = await chessConvai.speakWelcome(coach, welcomeInfo);
+        if (spoken) setCoachLine(spoken);
+      } finally {
+        setWelcomeDelivered(true);
+      }
+    })();
+  }, [isCovered, coach]);
+
+  useEffect(() => {
+    if (isCovered || !welcomeDelivered) return;
     const staticPolicy = buildCoachInstruction(coach, difficulty, 'move');
     const dynamicInfo = addStudentContext(
       buildDynamicCoachInfo(game, null, lastMove ? moveRecordToMoveLike(lastMove) : null, coach, difficulty, history),
@@ -588,10 +674,10 @@ function ChessGame({
       readyWaitMs: 3500,
       reconnectIfStale: false,
       staticPolicy,
-      endUserId: userIdentity?.endUserId ?? sessionIdRef.current,
+      endUserId: resolveConvaiConnectionEndUserId(userIdentity),
       endUserMetadata: userIdentity?.endUserMetadata ?? null,
     }).then(() => chessConvai.updateCoachContext(coach, dynamicInfo));
-  }, [identityKey]);
+  }, [identityKey, welcomeDelivered, isCovered, coach, difficulty, userIdentity]);
 
   useEffect(() => {
     return chessConvai.onResponse((response) => {
@@ -694,6 +780,8 @@ function ChessGame({
     analysisStartedRef.current = false;
     gameOverHandledRef.current = false;
     welcomeSpokenRef.current = false;
+    welcomePendingRef.current = null;
+    setWelcomeDelivered(false);
     spokenReasonsRef.current.clear();
     const freshGame = new Chess();
     setGame(freshGame);
@@ -717,9 +805,16 @@ function ChessGame({
 
     const openingInfo = addStudentContext(buildDynamicCoachInfo(freshGame, null, null, coach, difficulty), userIdentity);
     const welcomeInfo = addStudentContext(buildWelcomeDynamicInfo(freshGame, coach, difficulty, newSessionId), userIdentity);
-    await chessConvai.beginNewGame(coach, difficulty, newSessionId, openingInfo, userIdentity);
+    const spoken = await chessConvai.beginNewGame(
+      coach,
+      difficulty,
+      newSessionId,
+      openingInfo,
+      userIdentity,
+      welcomeInfo,
+    );
     welcomeSpokenRef.current = true;
-    const spoken = await chessConvai.speakWelcome(coach, welcomeInfo);
+    setWelcomeDelivered(true);
     if (spoken) setCoachLine(spoken);
   }
 
@@ -1481,7 +1576,7 @@ function PuzzleScreen({
     debugLog('PuzzleScreen', `Mounting — connecting coach ${coach.name} (${coach.id})`);
     chessConvai.unlockAudio();
     void chessConvai.connectCoach(coach, {
-      endUserId: userIdentity?.endUserId,
+      endUserId: resolveConvaiConnectionEndUserId(userIdentity),
       endUserMetadata: userIdentity?.endUserMetadata,
     }).then(() => {
       debugLog('PuzzleScreen', `connectCoach resolved for ${coach.name}`);

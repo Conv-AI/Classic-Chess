@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { COACHES, DIFFICULTIES, getCoach, getDifficulty, suggestedDifficultyForCoach } from './coachConfig';
+import {
+  COACHES,
+  DIFFICULTIES,
+  getCoach,
+  getDifficulty,
+  resolveConvaiCharacterId,
+  suggestedDifficultyForCoach,
+} from './coachConfig';
 
 describe('coach configuration', () => {
   it('defines the four feedback coaches', () => {
@@ -17,6 +24,12 @@ describe('coach configuration', () => {
 
   it('maps all difficulty ids to stockfish skill levels', () => {
     expect(DIFFICULTIES.map((difficulty) => difficulty.stockfishSkill)).toEqual([2, 5, 12, 19, 20]);
+  });
+
+  it('uses LTM characters for signed-in users and guest clones when configured', () => {
+    const leila = getCoach('leila');
+    expect(resolveConvaiCharacterId(leila, true)).toBe(leila.characterId);
+    expect(resolveConvaiCharacterId(leila, false)).toBe(leila.guestCharacterId ?? leila.characterId);
   });
 
   it('falls back to a supported difficulty when a coach does not support the current one', () => {

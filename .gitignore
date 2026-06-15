@@ -23,11 +23,6 @@ Thumbs.db
 .vscode/
 .idea/
 
-# Large local character assets
-public/*.glb
-public/*.gltf
-public/*.bin
-
 demo/
 docs/prompts.txt
 docs/AGENT_HANDOFF.md

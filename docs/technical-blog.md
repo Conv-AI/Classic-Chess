@@ -139,9 +139,15 @@ This lets the coach behave like a real teacher instead of a move generator. The 
 
 Convai responses can arrive as streamed text while the voice is playing. The manager listens for `bot-llm-text` messages and stores the latest response text.
 
-Speech timing comes from `stateChange`. When `isSpeaking` becomes true, the avatar starts consuming lipsync frames. When it becomes false, the manager flushes the final text and waits for a short silence window before allowing another request.
+Speech timing combines SDK `stateChange`, lipsync activity, and a conservative word-count estimate. Coach moves use `waitForFullSpeech: true` so Stockfish replies are applied only after the spoken line finishes.
 
 The manager also stores the longest response text seen during the stream. This helps avoid clipped text bubbles when the streamed message updates in chunks.
+
+## Quick Play Loading and Welcome
+
+Quick Play mounts the game board behind a loading overlay. Convai connects and `beginNewGame` runs setup while the overlay shows monotonic progress messages (connect → warm up → set up game → “Taking your seat…”).
+
+The overlay peels before welcome speech. After the board appears, the app waits ~900 ms so the player can orient, then delivers the welcome line. This avoids bombarding the user during the screen transition while still hiding LLM latency behind loading.
 
 ## Reallusion Avatar Lipsync
 

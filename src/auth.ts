@@ -12,9 +12,74 @@ export type UserIdentity = {
 };
 
 const STATIC_AUTH_STORAGE_KEY = 'classic-chess.googleUser.v1';
+const GUEST_END_USER_ID_KEY = 'classic-chess.guestEndUserId.v1';
+const KNOWN_END_USER_IDS_KEY = 'classic-chess.knownEndUserIds.v1';
+const MAX_KNOWN_END_USER_IDS = 64;
 
 export function getGoogleClientId(): string {
   return import.meta.env.VITE_GOOGLE_CLIENT_ID?.trim() ?? '';
+}
+
+/** Convai long-term memory is only used for signed-in Google users. */
+export function usesConvaiLongTermMemory(identity: UserIdentity | null | undefined): boolean {
+  return Boolean(identity?.endUserId);
+}
+
+/** Google end user id when signed in; empty for guests. */
+export function resolveConvaiEndUserId(identity: UserIdentity | null | undefined): string {
+  return identity?.endUserId ?? '';
+}
+
+/** Stable guest id per browser — reused across visits on this device. */
+export function getStableGuestEndUserId(): string {
+  try {
+    const existing = window.localStorage.getItem(GUEST_END_USER_ID_KEY)?.trim();
+    if (existing) return existing;
+    const created = `guest:${crypto.randomUUID()}`;
+    window.localStorage.setItem(GUEST_END_USER_ID_KEY, created);
+    registerKnownEndUserId(created);
+    return created;
+  } catch {
+    const fallback = `guest:${crypto.randomUUID()}`;
+    registerKnownEndUserId(fallback);
+    return fallback;
+  }
+}
+
+export function resolveConvaiConnectionEndUserId(identity: UserIdentity | null | undefined): string {
+  if (identity?.endUserId) {
+    registerKnownEndUserId(identity.endUserId);
+    return identity.endUserId;
+  }
+  return getStableGuestEndUserId();
+}
+
+/** Tracks ids this browser has connected with — fallback when list API is unavailable. */
+export function registerKnownEndUserId(endUserId: string): void {
+  const value = endUserId.trim();
+  if (!value) return;
+  try {
+    const existing = getKnownEndUserIds();
+    if (existing.includes(value)) return;
+    const next = [value, ...existing].slice(0, MAX_KNOWN_END_USER_IDS);
+    window.localStorage.setItem(KNOWN_END_USER_IDS_KEY, JSON.stringify(next));
+  } catch {}
+}
+
+export function getKnownEndUserIds(): string[] {
+  try {
+    const raw = window.localStorage.getItem(KNOWN_END_USER_IDS_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((item): item is string => typeof item === 'string' && item.trim().length > 0);
+  } catch {
+    return [];
+  }
+}
+
+export function getCachedAuthUser(): AuthUser | null {
+  return getStoredStaticAuthUser();
 }
 
 export function authUserToIdentity(user: AuthUser | null): UserIdentity | null {

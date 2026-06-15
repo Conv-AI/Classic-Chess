@@ -20,7 +20,8 @@ The implementation adds:
 - Conservative Convai memory writes:
   - one profile memory with the student's name,
   - one concise post-game learning memory after analysis.
-- A guest fallback that preserves the old per-game session behavior.
+- A guest fallback with a **stable per-browser** Convai `endUserId` (`guest:{uuid}` in `localStorage`) so anonymous users on the same device keep a consistent connect identity without app-side LTM writes.
+- Automatic **MAU-limit recovery**: on Convai “speaker limit reached” errors, delete known end users via the Convai API and retry connect once (`src/convaiEndUsers.ts`).
 
 Important files:
 
@@ -28,7 +29,8 @@ Important files:
 - `src/auth.ts`: maps verified Google users into Convai-facing identity.
 - `src/auth.test.ts`: tests the Google user -> Convai identity mapping.
 - `src/App.tsx`: stores auth state and passes identity into game/puzzle flows.
-- `src/convaiManager.ts`: passes `endUserId`/`endUserMetadata` to `ConvaiClient` and writes memories.
+- `src/convaiManager.ts`: passes `endUserId`/`endUserMetadata` to `ConvaiClient`, MAU recovery, welcome delivery, and writes memories.
+- `src/convaiEndUsers.ts`: list/delete end-user helpers and MAU error detection.
 - `vite.config.ts`: local auth endpoints and Google token verification.
 - `package.json`: adds `google-auth-library`.
 
@@ -223,7 +225,13 @@ For a signed-in user, the Convai identity looks like:
 }
 ```
 
-For a guest user, `authUserToIdentity(null)` returns `null`, and the app preserves the old behavior: each game session id is used as the Convai end user id.
+For a guest user, `authUserToIdentity(null)` returns `null`. The app still connects with a stable browser id from `getStableGuestEndUserId()`:
+
+```ts
+endUserId = `guest:${crypto.randomUUID()}` // created once, stored in localStorage
+```
+
+Guests do **not** receive app-side LTM memory writes (`usesConvaiLongTermMemory` is false). Game session ids (`game-…`) remain separate and are used only for saved-game metadata, not as the Convai connect id.
 
 ## Convai Integration
 
@@ -237,7 +245,9 @@ That means:
 
 - Leila + your Google identity gets one memory scope.
 - Another coach + your same Google identity gets a different memory scope.
-- Guest games do not share memory across sessions because their ids are per-game.
+- Guest browsers reuse the same `guest:{uuid}` connect id across games on that device (no cross-browser sharing).
+
+Optional **guest character clones**: if your primary Convai characters require LTM/`end_user_id`, set `VITE_CONVAI_GUEST_CHARACTER_<COACH>` env vars to LTM-disabled clone character IDs (see `resolveConvaiCharacterId` in `src/coachConfig.ts`).
 
 The manager passes identity into `ConvaiClient`:
 
@@ -253,17 +263,21 @@ new ConvaiClient({
 
 The app now separates:
 
-- game session id: still unique per game,
-- Convai end user id: stable across signed-in sessions.
+- **game session id:** still unique per saved game (`game-…`),
+- **Convai end user id:** `google:{sub}` when signed in, or stable `guest:{uuid}` per browser when not.
 
-This was important because the previous implementation used the game session id as `endUserId`, which prevented real cross-session memory.
+### MAU limit recovery
+
+Convai API keys have a monthly active user (MAU) cap per character. When connect fails with an MAU-limit error, `convaiManager` calls `deleteAllEndUsers()` (Convai delete API + local known-id registry fallback) and retries the session once. See `src/convaiEndUsers.ts`.
 
 ## Where Identity Is Applied
 
 Quick Play:
 
-- `App.startQuickPlay()` passes `userIdentity` into `chessConvai.connectCoach`.
-- `ChessGame` passes `userIdentity` into `chessConvai.beginNewGame`.
+- `App.startQuickPlay()` connects Convai and keeps the **loading overlay** through game setup.
+- `ChessGame` runs `beginNewGame` setup behind the overlay, then peels loading with a short “Taking your seat…” pause.
+- Welcome speech is delivered **after** the board is visible (`POST_REVEAL_WELCOME_MS` ≈ 900 ms) so players are not bombarded during the transition.
+- `resolveConvaiConnectionEndUserId(userIdentity)` is passed into every `connectCoach` call.
 - If the user signs in while already in a game, `ChessGame` reconnects the active coach with the new identity and refreshes board context.
 
 Puzzles:

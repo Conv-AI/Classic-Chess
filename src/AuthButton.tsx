@@ -44,6 +44,7 @@ type Props = {
 };
 
 let googleScriptPromise: Promise<void> | null = null;
+let googleIdentityInitialized = false;
 
 function loadGoogleScript(): Promise<void> {
   if (window.google?.accounts?.id) return Promise.resolve();
@@ -98,27 +99,30 @@ export default function AuthButton({ user, onUserChange }: Props) {
     void loadGoogleScript()
       .then(() => {
         if (cancelled || !buttonRef.current || !window.google?.accounts?.id) return;
-        window.google.accounts.id.initialize({
-          client_id: googleClientId,
-          ux_mode: 'popup',
-          auto_select: false,
-          callback: (response) => {
-            const credential = response.credential;
-            if (!credential) {
-              setStatus('Google did not return a credential.');
-              return;
-            }
-            setStatus('Signing in...');
-            void signInWithGoogleCredential(credential)
-              .then((nextUser) => {
-                onUserChange(nextUser);
-                setStatus('');
-              })
-              .catch((err) => {
-                setStatus(err instanceof Error ? err.message : 'Google sign-in failed.');
-              });
-          },
-        });
+        if (!googleIdentityInitialized) {
+          window.google.accounts.id.initialize({
+            client_id: googleClientId,
+            ux_mode: 'popup',
+            auto_select: false,
+            callback: (response) => {
+              const credential = response.credential;
+              if (!credential) {
+                setStatus('Google did not return a credential.');
+                return;
+              }
+              setStatus('Signing in...');
+              void signInWithGoogleCredential(credential)
+                .then((nextUser) => {
+                  onUserChange(nextUser);
+                  setStatus('');
+                })
+                .catch((err) => {
+                  setStatus(err instanceof Error ? err.message : 'Google sign-in failed.');
+                });
+            },
+          });
+          googleIdentityInitialized = true;
+        }
         window.google.accounts.id.renderButton(buttonRef.current, {
           type: 'standard',
           theme: 'outline',

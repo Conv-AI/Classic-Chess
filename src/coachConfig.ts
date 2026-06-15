@@ -12,7 +12,10 @@ export type CoachConfig = {
   assetName: 'Vincent' | 'Tyler' | 'Cassandra' | 'Danielle';
   modelFile: string;
   idleFile: string;
+  /** LTM-enabled Convai character for signed-in Google users. */
   characterId: string;
+  /** Optional LTM-disabled clone for anonymous guests (env: VITE_CONVAI_GUEST_CHARACTER_*). */
+  guestCharacterId?: string;
   bgColor: string;
   accent: string;
   stockfishRange: [number, number];
@@ -93,8 +96,8 @@ export const COACHES: CoachConfig[] = [
     name: 'Magnus',
     title: 'The Grandmaster',
     assetName: 'Vincent',
-    modelFile: 'vincent.glb',
-    idleFile: 'vincent-idle.glb',
+    modelFile: 'magnus.glb',
+    idleFile: 'magnus-animations.glb',
     characterId: 'da1ff068-477c-11f1-a121-42010a7be02c',
     bgColor: '#d4dce8',
     accent: '#4d6b8f',
@@ -110,8 +113,8 @@ export const COACHES: CoachConfig[] = [
     name: 'Sofia',
     title: 'The Tactician',
     assetName: 'Cassandra',
-    modelFile: 'cassandra.glb',
-    idleFile: 'cassandra-idle.glb',
+    modelFile: 'sofia.glb',
+    idleFile: 'sofia-animations.glb',
     characterId: '9f3c8e20-477c-11f1-a6c8-42010a7be02c',
     bgColor: '#d0ddd5',
     accent: '#1f8a6b',
@@ -127,8 +130,8 @@ export const COACHES: CoachConfig[] = [
     name: 'Arjun',
     title: 'The Patient Teacher',
     assetName: 'Tyler',
-    modelFile: 'tyler.glb',
-    idleFile: 'tyler-idle.glb',
+    modelFile: 'arjun.glb',
+    idleFile: 'arjun-animations.glb',
     characterId: 'f465b7aa-477c-11f1-b82a-42010a7be02c',
     bgColor: '#ddd5d0',
     accent: '#b8684d',
@@ -144,8 +147,8 @@ export const COACHES: CoachConfig[] = [
     name: 'Leila',
     title: 'The Strategist',
     assetName: 'Danielle',
-    modelFile: 'danielle.glb',
-    idleFile: 'danielle-idle.glb',
+    modelFile: 'leila.glb',
+    idleFile: 'leila-animations.glb',
     characterId: 'c1f0a244-477c-11f1-acd0-42010a7be02c',
     bgColor: '#e0d5dd',
     accent: '#8f5f86',
@@ -157,6 +160,29 @@ export const COACHES: CoachConfig[] = [
     hintStyle: 'I frame hints around the plan first: weak squares, pawn breaks, improving pieces, or simplifying. Then I reveal the move only when appropriate.',
   },
 ];
+
+function guestCharacterIdFromEnv(coachId: BuiltinCoachId): string | undefined {
+  const envByCoach: Record<BuiltinCoachId, string | undefined> = {
+    magnus: import.meta.env.VITE_CONVAI_GUEST_CHARACTER_MAGNUS,
+    sofia: import.meta.env.VITE_CONVAI_GUEST_CHARACTER_SOFIA,
+    arjun: import.meta.env.VITE_CONVAI_GUEST_CHARACTER_ARJUN,
+    leila: import.meta.env.VITE_CONVAI_GUEST_CHARACTER_LEILA,
+  };
+  const value = envByCoach[coachId]?.trim();
+  return value || undefined;
+}
+
+for (const coach of COACHES) {
+  if (coach.id === 'magnus' || coach.id === 'sofia' || coach.id === 'arjun' || coach.id === 'leila') {
+    coach.guestCharacterId = guestCharacterIdFromEnv(coach.id);
+  }
+}
+
+/** Signed-in users keep LTM characters; guests use optional LTM-off clones. */
+export function resolveConvaiCharacterId(coach: CoachConfig, signedInWithLtm: boolean): string {
+  if (signedInWithLtm) return coach.characterId;
+  return coach.guestCharacterId?.trim() || coach.characterId;
+}
 
 export const DEFAULT_COACH = COACHES[3]; // Leila
 export const DEFAULT_DIFFICULTY = DIFFICULTIES[1];

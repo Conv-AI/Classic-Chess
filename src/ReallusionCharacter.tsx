@@ -17,6 +17,9 @@ const HAIR_NAME_PATTERN = /hair|lash|brow|beard|scalp|fur/i;
 
 const TEETH_VISEME_BOOST = 1.35;
 
+const LIPSYNC_MESH_PATTERN = /CC_Base_(Body|Teeth|Tongue)/i;
+const LIPSYNC_LOG_INTERVAL_MS = 2000;
+
 const LIPSYNC_PROFILES: Record<string, {
   overall: number;
   jawMorph: number;
@@ -29,68 +32,113 @@ const LIPSYNC_PROFILES: Record<string, {
   Vincent: { overall: 0.95, jawMorph: 1.3, jawBone: 0, openVisemes: 1.2, wideVisemes: 0.2, smileFrown: 0.25, pressPucker: 0.75 },
   Tyler: { overall: 1.0, jawMorph: 1.15, jawBone: 0, openVisemes: 1.1, wideVisemes: 0.6, smileFrown: 0.5, pressPucker: 0.65 },
   Cassandra: { overall: 1.0, jawMorph: 1.15, jawBone: 0, openVisemes: 1.1, wideVisemes: 0.6, smileFrown: 0.5, pressPucker: 0.65 },
-  Danielle: { overall: 1.0, jawMorph: 1.0, jawBone: 0, openVisemes: 1.0, wideVisemes: 0.8, smileFrown: 0.75, pressPucker: 0.7 },
+  Danielle: { overall: 1.0, jawMorph: 1.3, jawBone: 0, openVisemes: 1.15, wideVisemes: 0.55, smileFrown: 0.6, pressPucker: 0.55 },
 };
 
 const ARKIT_TO_CC4: Array<[number, string, number]> = [
-  [17, 'Jaw_Open', 0.65], [17, 'V_Open', 0.5], [17, 'V_Lip_Open', 0.4],
+  [17, 'Jaw_Open', 0.85], [17, 'V_Open', 0.72], [17, 'V_Lip_Open', 0.58],
   [37, 'Mouth_Down_Lower_L', 0.6], [38, 'Mouth_Down_Lower_R', 0.6],
+  [37, 'Mouth_LowerLip_Depress_L', 0.68], [38, 'Mouth_LowerLip_Depress_R', 0.68],
+  [37, 'Mouth_Down', 0.5], [38, 'Mouth_Down', 0.5],
   [39, 'Mouth_Up_Upper_L', 0.5], [40, 'Mouth_Up_Upper_R', 0.5],
+  [39, 'Mouth_UpperLip_Raise_L', 0.58], [40, 'Mouth_UpperLip_Raise_R', 0.58],
   [37, 'Mouth_Drop_Lower', 0.3], [38, 'Mouth_Drop_Lower', 0.3],
   [23, 'Mouth_Smile_L', 1.0], [24, 'Mouth_Smile_R', 1.0],
+  [23, 'Mouth_Corner_Pull_L', 0.85], [24, 'Mouth_Corner_Pull_R', 0.85],
   [25, 'Mouth_Frown_L', 0.7], [26, 'Mouth_Frown_R', 0.7],
+  [25, 'Mouth_Corner_Down_L', 0.75], [26, 'Mouth_Corner_Down_R', 0.75],
   [33, 'Mouth_Shrug_Lower', 0.5], [34, 'Mouth_Shrug_Upper', 0.5],
-  [29, 'Mouth_Stretch_L', 0.7], [30, 'Mouth_Stretch_R', 0.7],
+  [33, 'Mouth_Lips_Push_DL', 0.45], [33, 'Mouth_Lips_Push_DR', 0.45],
+  [34, 'Mouth_Lips_Push_UL', 0.45], [34, 'Mouth_Lips_Push_UR', 0.45],
+  [29, 'Mouth_Stretch_L', 0.55], [30, 'Mouth_Stretch_R', 0.55],
   [29, 'V_Wide', 0.4], [30, 'V_Wide', 0.4],
-  [27, 'Mouth_Dimple_L', 0.5], [28, 'Mouth_Dimple_R', 0.5],
+  [27, 'Mouth_Dimple_L', 0.35], [28, 'Mouth_Dimple_R', 0.35],
   [31, 'Mouth_Roll_In_Lower_L', 0.65], [31, 'Mouth_Roll_In_Lower_R', 0.65],
+  [31, 'Mouth_LowerLip_RollIn_L', 0.65], [31, 'Mouth_LowerLip_RollIn_R', 0.65],
   [32, 'Mouth_Roll_In_Upper_L', 0.65], [32, 'Mouth_Roll_In_Upper_R', 0.65],
+  [32, 'Mouth_UpperLip_RollIn_L', 0.65], [32, 'Mouth_UpperLip_RollIn_R', 0.65],
   [35, 'Mouth_Press_L', 0.9], [36, 'Mouth_Press_R', 0.9],
+  [35, 'Mouth_Lips_Press_L', 0.85], [36, 'Mouth_Lips_Press_R', 0.85],
   [35, 'V_Explosive', 0.4], [36, 'V_Explosive', 0.4],
   [19, 'Mouth_Funnel_Up_L', 0.5], [19, 'Mouth_Funnel_Up_R', 0.5],
   [19, 'Mouth_Funnel_Down_L', 0.5], [19, 'Mouth_Funnel_Down_R', 0.5],
-  [19, 'V_Tight_O', 0.4], [19, 'V_Dental_Lip', 0.3],
+  [19, 'Mouth_Funnel_UL', 0.45], [19, 'Mouth_Funnel_UR', 0.45],
+  [19, 'Mouth_Funnel_DL', 0.45], [19, 'Mouth_Funnel_DR', 0.45],
+  [19, 'V_Tight_O', 0.4], [19, 'V_Dental_Lip', 0.35],
   [20, 'Mouth_Pucker_Up_L', 0.7], [20, 'Mouth_Pucker_Up_R', 0.7],
   [20, 'Mouth_Pucker_Down_L', 0.7], [20, 'Mouth_Pucker_Down_R', 0.7],
+  [20, 'Mouth_Lips_Purse_UL', 0.65], [20, 'Mouth_Lips_Purse_UR', 0.65],
+  [20, 'Mouth_Lips_Purse_DL', 0.65], [20, 'Mouth_Lips_Purse_DR', 0.65],
   [20, 'V_Tight_O', 0.6], [20, 'Mouth_Blow_L', 0.3], [20, 'Mouth_Blow_R', 0.3],
+  [20, 'Mouth_Lips_Blow_L', 0.3], [20, 'Mouth_Lips_Blow_R', 0.3],
   [46, 'Cheek_Puff_L', 0.8], [46, 'Cheek_Puff_R', 0.8],
+  [46, 'Mouth_Cheek_Blow_L', 0.55], [46, 'Mouth_Cheek_Blow_R', 0.55],
   [21, 'Mouth_R', 0.5], [22, 'Mouth_L', 0.5],
+  [21, 'Mouth_Right', 0.5], [22, 'Mouth_Left', 0.5],
   [51, 'Tongue_Out', 0.8], [51, 'V_Tongue_Out', 0.5],
   [0, 'Eye_Blink_L', 1.0], [7, 'Eye_Blink_R', 1.0],
   [5, 'Eye_Squint_L', 0.7], [12, 'Eye_Squint_R', 0.7],
   [6, 'Eye_Wide_L', 0.85], [13, 'Eye_Wide_R', 0.85],
   [41, 'Brow_Drop_L', 0.8], [42, 'Brow_Drop_R', 0.8],
+  [41, 'Brow_Down_L', 0.8], [42, 'Brow_Down_R', 0.8],
   [43, 'Brow_Raise_Inner_L', 0.7], [43, 'Brow_Raise_Inner_R', 0.7],
+  [43, 'Brow_Raise_In_L', 0.7], [43, 'Brow_Raise_In_R', 0.7],
   [44, 'Brow_Raise_Outer_L', 0.7], [45, 'Brow_Raise_Outer_R', 0.7],
   [49, 'Nose_Sneer_L', 0.8], [50, 'Nose_Sneer_R', 0.8],
+  [49, 'Nose_Nasolabial_Deepen_L', 0.7], [50, 'Nose_Nasolabial_Deepen_R', 0.7],
   [47, 'Cheek_Raise_L', 0.6], [48, 'Cheek_Raise_R', 0.6],
+  [47, 'Eye_Cheek_Raise_L', 0.6], [48, 'Eye_Cheek_Raise_R', 0.6],
 ];
 
 function recoverMorphTargetNames(root: THREE.Object3D, gltfJson: any) {
   if (!gltfJson?.meshes) return;
-  gltfJson.meshes.forEach((meshData: any) => {
-    const names: string[] | undefined = meshData.extras?.targetNames;
-    if (!names?.length) return;
-    root.traverse((child) => {
-      const mesh = child as THREE.SkinnedMesh;
-      if (!mesh.isSkinnedMesh || mesh.name !== meshData.name || !mesh.morphTargetInfluences?.length) return;
-      const existing = Object.keys(mesh.morphTargetDictionary || {});
-      if (existing.some((key) => Number.isNaN(Number(key)))) return;
-      const dict: Record<string, number> = {};
-      names.forEach((name, index) => {
-        if (index < mesh.morphTargetInfluences!.length) dict[name] = index;
-      });
-      mesh.morphTargetDictionary = dict;
-    });
+  const meshDataByName = new Map<string, { extras?: { targetNames?: string[] } }>();
+  gltfJson.meshes.forEach((meshData: { name?: string; extras?: { targetNames?: string[] } }) => {
+    if (meshData.name) meshDataByName.set(meshData.name, meshData);
   });
+
+  root.traverse((child) => {
+    const mesh = child as THREE.SkinnedMesh;
+    if (!mesh.isSkinnedMesh || !mesh.morphTargetInfluences?.length) return;
+    const names = meshDataByName.get(mesh.name)?.extras?.targetNames;
+    if (!names?.length) return;
+
+    const existing = mesh.morphTargetDictionary ?? {};
+    if ('Jaw_Open' in existing || 'V_Open' in existing) return;
+
+    const dict: Record<string, number> = {};
+    names.forEach((name, index) => {
+      if (index < mesh.morphTargetInfluences!.length) dict[name] = index;
+    });
+    mesh.morphTargetDictionary = dict;
+  });
+}
+
+function inspectLipsyncMeshes(root: THREE.Object3D, coachId: CoachId): void {
+  const summaries: string[] = [];
+  root.traverse((child) => {
+    const mesh = child as THREE.SkinnedMesh;
+    if (!mesh.isSkinnedMesh || !mesh.morphTargetInfluences?.length) return;
+    const dict = mesh.morphTargetDictionary ?? {};
+    const jawOpen = dict.Jaw_Open;
+    const vOpen = dict.V_Open;
+    summaries.push(
+      `${mesh.name}:morphs=${mesh.morphTargetInfluences.length},dict=${Object.keys(dict).length},Jaw_Open=${jawOpen ?? 'missing'},V_Open=${vOpen ?? 'missing'},lipsync=${isLipsyncMesh(mesh.name)}`,
+    );
+  });
+  debugLog('Lipsync', `Mesh inventory coach=${coachId} — ${summaries.join(' | ')}`);
+}
+
+function isLipsyncMesh(meshName: string): boolean {
+  return LIPSYNC_MESH_PATTERN.test(meshName);
 }
 
 function getMorphCategoryMultiplier(name: string, profile: typeof LIPSYNC_PROFILES[string]): number {
   if (name === 'Jaw_Open') return profile.jawMorph;
-  if (/^V_|Open|Funnel|Drop/i.test(name)) return profile.openVisemes;
-  if (/Wide|Stretch|Dimple|Mouth_R$|Mouth_L$/i.test(name)) return profile.wideVisemes;
-  if (/Smile|Frown/i.test(name)) return profile.smileFrown;
-  if (/Press|Pucker|Shrug|Roll_In|Blow|Tight_O|Dental_Lip/i.test(name)) return profile.pressPucker;
+  if (/^V_|Open|Funnel|Drop|Depress/i.test(name)) return profile.openVisemes;
+  if (/Wide|Stretch|Dimple|Mouth_R$|Mouth_L$|Corner_Pull|Corner_Wide/i.test(name)) return profile.wideVisemes;
+  if (/Smile|Frown|Corner_Down/i.test(name)) return profile.smileFrown;
+  if (/Press|Pucker|Shrug|Roll_In|RollIn|Blow|Tight_O|Dental_Lip|Purse|Push_/i.test(name)) return profile.pressPucker;
   return 1;
 }
 
@@ -113,7 +161,15 @@ function applyJawBone(root: THREE.Object3D, jawOpen: number, profile: typeof LIP
   if (jaw) jaw.rotation.x = jawOpen * profile.jawBone;
 }
 
-function applyArkitToCC4(frame: Float32Array, root: THREE.Object3D, assetName: string) {
+type LipsyncApplyStats = {
+  jawArkit: number;
+  morphTargets: number;
+  appliedOnBody: number;
+  bodyJawOpen: number;
+  bodyVOpen: number;
+};
+
+function applyArkitToCC4(frame: Float32Array, root: THREE.Object3D, assetName: string): LipsyncApplyStats {
   const profile = LIPSYNC_PROFILES[assetName] ?? LIPSYNC_PROFILES.Danielle;
   const accum: Record<string, number> = {};
   for (const [index, name, scale] of ARKIT_TO_CC4) {
@@ -122,20 +178,33 @@ function applyArkitToCC4(frame: Float32Array, root: THREE.Object3D, assetName: s
     accum[name] = Math.min(1, (accum[name] ?? 0) + value);
   }
 
-  const jawOpen = Math.min(1, (frame[17] ?? 0) * profile.overall);
+  const jawArkit = frame[17] ?? 0;
+  const jawOpen = Math.min(1, jawArkit * profile.overall);
   applyJawBone(root, jawOpen, profile);
   applyCC4TeethMotion(root, jawOpen);
+
+  let appliedOnBody = 0;
+  let bodyJawOpen = 0;
+  let bodyVOpen = 0;
 
   root.traverse((child) => {
     const mesh = child as THREE.SkinnedMesh;
     if (!mesh.isSkinnedMesh || !mesh.morphTargetDictionary || !mesh.morphTargetInfluences) return;
+    if (!isLipsyncMesh(mesh.name)) return;
+    const isBodyMesh = /body/i.test(mesh.name);
     const isTeethMesh = /teeth/i.test(mesh.name);
     for (const [name, value] of Object.entries(accum)) {
       const morphIndex = mesh.morphTargetDictionary[name];
       if (morphIndex !== undefined) {
-        mesh.morphTargetInfluences[morphIndex] = isTeethMesh && name === 'V_Open'
+        const applied = isTeethMesh && name === 'V_Open'
           ? Math.min(1, value * TEETH_VISEME_BOOST)
           : value;
+        mesh.morphTargetInfluences[morphIndex] = applied;
+        if (isBodyMesh) {
+          appliedOnBody++;
+          if (name === 'Jaw_Open') bodyJawOpen = applied;
+          if (name === 'V_Open') bodyVOpen = applied;
+        }
         continue;
       }
       if (isTeethMesh && name === 'V_Dental_Lip') {
@@ -149,6 +218,14 @@ function applyArkitToCC4(frame: Float32Array, root: THREE.Object3D, assetName: s
       }
     }
   });
+
+  return {
+    jawArkit,
+    morphTargets: Object.keys(accum).length,
+    appliedOnBody,
+    bodyJawOpen,
+    bodyVOpen,
+  };
 }
 
 function decayMorphs(root: THREE.Object3D) {
@@ -157,7 +234,7 @@ function decayMorphs(root: THREE.Object3D) {
   decayCC4TeethMotion(root);
   root.traverse((child) => {
     const mesh = child as THREE.SkinnedMesh;
-    if (!mesh.isSkinnedMesh || !mesh.morphTargetInfluences) return;
+    if (!mesh.isSkinnedMesh || !mesh.morphTargetInfluences || !isLipsyncMesh(mesh.name)) return;
     for (let i = 0; i < mesh.morphTargetInfluences.length; i++) {
       mesh.morphTargetInfluences[i] *= 0.8;
       if (mesh.morphTargetInfluences[i] < 0.001) mesh.morphTargetInfluences[i] = 0;
@@ -225,6 +302,8 @@ export default function ReallusionCharacter({ coachId, assetName, charUrl, animU
   const groupRef = useRef<THREE.Group>(null);
   const hadLipsyncRef = useRef(false);
   const wasDecayingRef = useRef(false);
+  const lipsyncLogAtRef = useRef(0);
+  const noFrameLogAtRef = useRef(0);
   const gltf = useGLTF(charUrl) as any;
   const { scene } = gltf;
   const { animations } = useGLTF(animUrl);
@@ -233,7 +312,8 @@ export default function ReallusionCharacter({ coachId, assetName, charUrl, animU
   useMemo(() => {
     if (gltf?.parser?.json) recoverMorphTargetNames(scene, gltf.parser.json);
     tuneCharacterMaterials(scene);
-  }, [gltf, scene]);
+    inspectLipsyncMeshes(scene, coachId);
+  }, [gltf, scene, coachId]);
 
   useEffect(() => {
     if (!groupRef.current) return;
@@ -268,17 +348,38 @@ export default function ReallusionCharacter({ coachId, assetName, charUrl, animU
 
   useFrame(() => {
     if (!groupRef.current) return;
+    const speaking = chessConvai.getIsSpeaking(coachId);
     const frame = chessConvai.getLipsyncFrame(coachId);
+
     if (frame) {
-      applyArkitToCC4(frame, groupRef.current, assetName);
+      const stats = applyArkitToCC4(frame, groupRef.current, assetName);
       hadLipsyncRef.current = true;
       wasDecayingRef.current = false;
-    } else if (hadLipsyncRef.current || chessConvai.getIsSpeaking(coachId)) {
+
+      const now = performance.now();
+      if (now - lipsyncLogAtRef.current >= LIPSYNC_LOG_INTERVAL_MS) {
+        lipsyncLogAtRef.current = now;
+        debugLog(
+          'Lipsync',
+          `coach=${coachId} asset=${assetName} arkitJaw=${stats.jawArkit.toFixed(3)} targets=${stats.morphTargets} bodyApplied=${stats.appliedOnBody} bodyJawOpen=${stats.bodyJawOpen.toFixed(3)} bodyVOpen=${stats.bodyVOpen.toFixed(3)} speaking=${speaking}`,
+        );
+      }
+      return;
+    }
+
+    if (speaking) {
+      const now = performance.now();
+      if (now - noFrameLogAtRef.current >= LIPSYNC_LOG_INTERVAL_MS) {
+        noFrameLogAtRef.current = now;
+        debugLog('Lipsync', `coach=${coachId} speaking=true but no blendshape frame this tick`);
+      }
+      return;
+    }
+
+    if (hadLipsyncRef.current || wasDecayingRef.current) {
       decayMorphs(groupRef.current);
       hadLipsyncRef.current = false;
       wasDecayingRef.current = true;
-    } else if (wasDecayingRef.current) {
-      decayMorphs(groupRef.current);
     }
   });
 

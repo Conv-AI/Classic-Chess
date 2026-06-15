@@ -1,5 +1,14 @@
-import { describe, expect, it } from 'vitest';
-import { authUserFromGoogleCredential, authUserToIdentity } from './auth';
+import { describe, expect, it, vi } from 'vitest';
+import {
+  authUserFromGoogleCredential,
+  authUserToIdentity,
+  getKnownEndUserIds,
+  getStableGuestEndUserId,
+  registerKnownEndUserId,
+  resolveConvaiConnectionEndUserId,
+  resolveConvaiEndUserId,
+  usesConvaiLongTermMemory,
+} from './auth';
 
 function fakeJwt(payload: Record<string, unknown>): string {
   const encoded = btoa(JSON.stringify(payload))
@@ -7,6 +16,18 @@ function fakeJwt(payload: Record<string, unknown>): string {
     .replace(/\//g, '_')
     .replace(/=+$/g, '');
   return `header.${encoded}.signature`;
+}
+
+function stubLocalStorage() {
+  const store = new Map<string, string>();
+  const localStorage = {
+    getItem: (key: string) => store.get(key) ?? null,
+    setItem: (key: string, value: string) => { store.set(key, value); },
+    removeItem: (key: string) => { store.delete(key); },
+    clear: () => { store.clear(); },
+  };
+  vi.stubGlobal('window', { localStorage });
+  return store;
 }
 
 describe('authUserToIdentity', () => {
@@ -43,6 +64,40 @@ describe('authUserToIdentity', () => {
 
   it('returns null for guest users', () => {
     expect(authUserToIdentity(null)).toBeNull();
+  });
+
+  it('reuses a stable guest id from localStorage across calls', () => {
+    stubLocalStorage();
+    const first = getStableGuestEndUserId();
+    const second = getStableGuestEndUserId();
+    expect(first).toBe(second);
+    expect(first.startsWith('guest:')).toBe(true);
+    expect(resolveConvaiConnectionEndUserId(null)).toBe(first);
+    expect(resolveConvaiEndUserId(null)).toBe('');
+    expect(usesConvaiLongTermMemory(null)).toBe(false);
+  });
+
+  it('tracks known end user ids in localStorage', () => {
+    stubLocalStorage();
+    registerKnownEndUserId('guest:abc');
+    registerKnownEndUserId('google:sub-1');
+    registerKnownEndUserId('guest:abc');
+    expect(getKnownEndUserIds()).toEqual(['google:sub-1', 'guest:abc']);
+  });
+
+  it('does not assign Convai memory identity to guests', () => {
+    stubLocalStorage();
+    expect(usesConvaiLongTermMemory(null)).toBe(false);
+    expect(usesConvaiLongTermMemory(authUserToIdentity({
+      id: 'sub-456',
+      name: 'Student',
+      email: 'student@example.com',
+    }))).toBe(true);
+    expect(resolveConvaiConnectionEndUserId(authUserToIdentity({
+      id: 'sub-456',
+      name: 'Student',
+      email: 'student@example.com',
+    }))).toBe('google:sub-456');
   });
 
   it('can derive the same auth user from a Google ID token payload for static hosting', () => {

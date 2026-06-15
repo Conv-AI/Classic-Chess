@@ -4,6 +4,7 @@ Classic Chess is a React, TypeScript, Vite chess coaching app. It combines `ches
 
 ## Features
 
+- Optional **Google sign-in** for Convai long-term memory (guest play unchanged)
 - **Quick Play** against Magnus, Sofia, Arjun, Leila, or custom coaches you create
 - **AI coach speech** through Convai with two coaching strategies:
   - **Coach mode** (default) — Convai's LLM sees full board context every turn and decides whether to speak (`run_llm: 'auto'`)
@@ -20,9 +21,22 @@ Classic Chess is a React, TypeScript, Vite chess coaching app. It combines `ches
 - Saved games and replay
 - Post-game analysis with Menu button and coach chat
 - Responsive desktop, ultrawide, and mobile layouts
-- Loading cover until the coach avatar has rendered
+- **Loading cover** through Convai connect, game setup, and a short “taking your seat” pause — welcome speech starts ~1s after the board appears
 - Portal-based tooltips (not clipped by card overflow)
 - Optional **Dialogue Dataset** tooling (`npm run dev:dataset`)
+
+## Character assets (Git LFS)
+
+Coach avatars are Reallusion CC4 GLB files bundled under `public/` (~450 MB total). They are tracked with **Git LFS** because several character files exceed GitHub’s 100 MB per-file limit.
+
+After cloning, install LFS and pull the models once:
+
+```bash
+git lfs install
+git lfs pull
+```
+
+Files: `magnus.glb`, `sofia.glb`, `arjun.glb`, `leila.glb` plus matching `*-animations.glb` idle clips. The app loads them from `public/` by default (no external CDN required).
 
 ## Run
 
@@ -55,7 +69,14 @@ VITE_CONVAI_API_KEY=your_key_here
 # Optional: publish board DOM as video to Convai room (also enable vision on character in Convai dashboard)
 VITE_CONVAI_BOARD_VISION=true
 
-# Optional: override character GLB asset base URL
+# Optional: Google sign-in for Convai long-term memory (see docs/google-convai-memory-tutorial.md)
+VITE_GOOGLE_CLIENT_ID=your-web-client-id.apps.googleusercontent.com
+
+# Optional: LTM-disabled Convai character clones for anonymous guests (one per builtin coach)
+# VITE_CONVAI_GUEST_CHARACTER_LEILA=...
+# VITE_CONVAI_GUEST_CHARACTER_MAGNUS=...
+
+# Optional: override character GLB asset base URL (defaults to bundled public/ assets)
 # VITE_CHARACTER_ASSET_BASE_URL=https://...
 ```
 
@@ -73,6 +94,8 @@ Recommended LLM for live coaching: **Gemini 2.5 Flash Lite** or **Claude 4 Sonne
 | [src/ChatDrawer.tsx](src/ChatDrawer.tsx) | Fixed bottom-right chat panel |
 | [src/Tooltip.tsx](src/Tooltip.tsx) | Viewport-aware portal tooltips |
 | [src/uiSounds.ts](src/uiSounds.ts) | Web Audio UI chimes (`tap`, `nav`, `back`, `confirm`, `toggle`, `send`, `yourTurn`) |
+| [src/auth.ts](src/auth.ts) | Google identity mapping, stable guest `endUserId`, LTM gating |
+| [src/convaiEndUsers.ts](src/convaiEndUsers.ts) | Convai end-user list/delete API helpers and MAU-limit detection |
 | [src/convaiApiKey.ts](src/convaiApiKey.ts) | API key from localStorage + env fallback |
 | [src/customCoaches.ts](src/customCoaches.ts) | localStorage for user-created coaches |
 | [src/convaiManager.ts](src/convaiManager.ts) | Convai lifecycle, static policy, dynamic context, speech queue, lipsync |
@@ -95,18 +118,20 @@ Puzzles and chat always use explicit scripted prompts.
 
 ### Coach move timing
 
-The coach applies her Stockfish move **only after** TTS finishes. `runCoachTurn` uses `waitForFullSpeech: true` and `waitUntilSpeechFinished()` with short audio-tail detection (~120 ms) so moves follow speech promptly.
+The coach applies her Stockfish move **only after** TTS finishes. `runCoachTurn` uses `waitForFullSpeech: true` and `waitUntilSpeechFinished()` (SDK/lipsync signals plus a word-count estimate fallback) so moves follow speech, not the other way around.
 
 ### Welcome lines
 
-Opening greetings use varied casual lines from `buildWelcomeDynamicInfo()` — no repeated “you have white / show opening move” scripts.
+Opening greetings use varied casual lines from `buildWelcomeDynamicInfo()`. During Quick Play, setup runs behind the loading overlay; the board reveals with a brief pause, then the welcome line plays so players are not hit with speech during the screen transition.
 
 ## Convai Integration
 
 - Static coaching policy seeded once with `keepInContext: true`; per-turn updates send **dynamic board state only** (reduces prompt leak and latency).
 - `updateContext({ mode: 'replace', run_llm })` for coach-decides turns; `updateDynamicInfo` for silent context refresh in Game mode.
 - Prompt-leak responses starting with `Human:` / `System:` / `User:` are suppressed.
-- New game: `resetSession` + context reset + fresh `endUserId` per session.
+- **End-user identity:** signed-in Google users connect as `google:{sub}` with LTM memory writes; guests use a stable per-browser `guest:{uuid}` in `localStorage` (no app-side LTM writes). Game session ids remain separate for saved games.
+- On Convai **MAU limit** errors, the app deletes known end users via the Convai API and retries connect once.
+- New game: `resetSession` + context reset; welcome is delivered after loading peels (Quick Play) or inline on rematch.
 - Game-over modal waits until the coach finishes speaking.
 
 ## Custom Coach Creator
@@ -114,7 +139,7 @@ Opening greetings use varied casual lines from `buildWelcomeDynamicInfo()` — n
 1. Open **Custom Coach** from the menu (API key required).
 2. Voices and languages load automatically; the voice list **filters to the selected language**.
 3. Default model: `gemini-2.5-flash-lite` (Convai-supported model codes only).
-4. On success, the coach is saved to localStorage and appears in the menu coach picker (Danielle avatar placeholder).
+4. On success, the coach is saved to localStorage and appears in the menu coach picker (Leila avatar placeholder).
 
 ## Debug Logging
 
@@ -126,6 +151,7 @@ Copy-log button in the game topbar copies the in-browser log buffer.
 
 ## References
 
-- [docs/convai-model-recommendation.md](docs/convai-model-recommendation.md)
+- [docs/google-convai-memory-tutorial.md](docs/google-convai-memory-tutorial.md)
 - [docs/coach_personas/](docs/coach_personas/)
 - [docs/convai_web-sdk_documentation.md](docs/convai_web-sdk_documentation.md)
+- [docs/technical-blog.md](docs/technical-blog.md)

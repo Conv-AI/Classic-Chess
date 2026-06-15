@@ -8,7 +8,7 @@ import ReallusionCharacter from './ReallusionCharacter';
 import Tooltip from './Tooltip';
 import { playUiSound, unlockUiAudio } from './uiSounds';
 
-const DEFAULT_CHARACTER_ASSET_BASE = 'https://huggingface.co/sponge/Orca/resolve/main/';
+const DEFAULT_CHARACTER_ASSET_BASE = import.meta.env.BASE_URL;
 const CHARACTER_ASSET_BASE = import.meta.env.VITE_CHARACTER_ASSET_BASE_URL || DEFAULT_CHARACTER_ASSET_BASE;
 const assetUrl = (fileName: string) => `${CHARACTER_ASSET_BASE.replace(/\/?$/, '/')}${fileName}`;
 
