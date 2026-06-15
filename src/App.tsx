@@ -282,11 +282,13 @@ function App() {
   }, []);
 
   const handleCoachAvatarReady = useCallback(() => {
+    debugLog('App', 'Avatar prewarm complete');
     avatarReadyResolverRef.current?.();
     avatarReadyResolverRef.current = null;
   }, []);
 
   const handleGameReady = useCallback(() => {
+    debugLog('App', 'Loading peel — coach is about to speak');
     gameReadyResolverRef.current?.();
     gameReadyResolverRef.current = null;
   }, []);
@@ -301,13 +303,13 @@ function App() {
   useEffect(() => {
     return chessConvai.onStatus((status) => {
       if (status.activeCoachId !== coachId) return;
-      if (screen !== 'loading' || loadingPhaseRef.current >= 4) return;
+      if (screen !== 'loading' || loadingPhaseRef.current >= 5) return;
       if (status.botReady) {
-        advanceLoading(3, 80, `Getting ${coach.name} ready...`);
+        advanceLoading(4, 80, `Getting ${coach.name} ready...`);
       } else if (status.connected) {
-        advanceLoading(2, 72, `Warming up ${coach.name}...`);
+        advanceLoading(3, 72, `Warming up ${coach.name}...`);
       } else if (status.connecting) {
-        advanceLoading(1, 45, `Connecting ${coach.name}...`);
+        advanceLoading(2, 55, `Connecting ${coach.name}...`);
       }
     });
   }, [coach.name, coachId, screen, advanceLoading]);
@@ -322,25 +324,37 @@ function App() {
     const selectedCoach = coach;
     setScreen('loading');
     loadingPhaseRef.current = 0;
-    advanceLoading(1, 18, `Loading ${selectedCoach.name} and the chess room...`);
+    advanceLoading(1, 25, `Loading ${selectedCoach.name}'s avatar...`);
     const avatarReady = new Promise<void>((resolve) => {
       avatarReadyResolverRef.current = resolve;
     });
-    debugLog('App', `Awaiting connectCoach + avatar prewarm for ${selectedCoach.name}`);
+    debugLog('App', `Awaiting avatar prewarm for ${selectedCoach.name}`);
+    let avatarTimedOut = false;
+    await Promise.race([
+      avatarReady.then(() => {
+        avatarTimedOut = false;
+      }),
+      new Promise<void>((resolve) => window.setTimeout(() => {
+        avatarTimedOut = true;
+        resolve();
+      }, 90000)),
+    ]);
+    avatarReadyResolverRef.current = null;
+    if (avatarTimedOut) {
+      debugLog('App', `Avatar prewarm timed out after 90s — continuing to Convai connect`);
+    }
+    debugLog('App', `Avatar ready — connecting ${selectedCoach.name} to Convai`);
     const gameReady = new Promise<void>((resolve) => {
       gameReadyResolverRef.current = resolve;
     });
     const staticPolicy = buildCoachInstruction(selectedCoach, getDifficulty(difficultyId), 'move');
-    await Promise.all([
-      chessConvai.connectCoach(selectedCoach, {
-        staticPolicy,
-        waitForBotReady: true,
-        readyWaitMs: 5000,
-        endUserId: resolveConvaiConnectionEndUserId(userIdentity),
-        endUserMetadata: userIdentity?.endUserMetadata,
-      }),
-      avatarReady,
-    ]);
+    await chessConvai.connectCoach(selectedCoach, {
+      staticPolicy,
+      waitForBotReady: true,
+      readyWaitMs: 5000,
+      endUserId: resolveConvaiConnectionEndUserId(userIdentity),
+      endUserMetadata: userIdentity?.endUserMetadata,
+    });
     const convaiStatus = chessConvai.getStatus();
     if (!convaiStatus.connected || !convaiStatus.botReady) {
       debugLog(
@@ -351,7 +365,7 @@ function App() {
       gameReadyResolverRef.current = null;
     } else {
       debugLog('App', `Coach connected — finishing game setup before revealing board`);
-      advanceLoading(4, 92, `${selectedCoach.name} is about to speak...`);
+      advanceLoading(5, 92, `${selectedCoach.name} is about to speak...`);
       await Promise.race([
         gameReady,
         new Promise<void>((resolve) => window.setTimeout(resolve, 22000)),
