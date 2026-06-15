@@ -115,6 +115,7 @@ export default function CoachCard({
   const handleCharacterReady = useCallback(() => {
     if (readyNotifiedRef.current) return;
     readyNotifiedRef.current = true;
+    debugLog('CoachCard', `Portrait ready for coach=${coach.id}`);
     setCharacterReady(true);
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
@@ -202,6 +203,7 @@ export default function CoachCard({
           gl={{ antialias: true, alpha: false, powerPreference: 'high-performance' }}
           style={{ background: coach.bgColor }}
           onCreated={({ camera, gl, scene }) => {
+            debugLog('CoachCard', `3D scene ready for coach=${coach.id}`);
             camera.lookAt(0, 1.4, 0);
             scene.background = null;
             gl.setClearColor(coach.bgColor, 1);

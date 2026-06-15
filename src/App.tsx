@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type MutableRefObject, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { Chess, type Move, type Square } from 'chess.js';
 import { ChevronsLeft, ChevronsRight, ChevronLeft, ChevronRight, Clipboard } from 'lucide-react';
@@ -16,9 +16,15 @@ import { playUiSound, playYourTurnSound, unlockUiAudio } from './uiSounds';
 import Tooltip from './Tooltip';
 import { chessConvai } from './convaiManager';
 import { copyLogToClipboard, debugLog } from './debugLog';
+import AvatarLoadProgress from './AvatarLoadProgress';
 import CoachCard from './CoachCard';
 import DatasetScreen from './DatasetScreen';
 import LoadingScreen from './LoadingScreen';
+import {
+  QUICK_PLAY_PHASES,
+  createQuickPlayLoadingReporter,
+  type QuickPlayLoadingReporter,
+} from './quickPlayLoading';
 import MenuScreen from './MenuScreen';
 import { PUZZLES, puzzleScore, type Puzzle } from './puzzles';
 import { stockfishEngine } from './stockfishEngine';
@@ -243,7 +249,7 @@ function App() {
   const [loadingStep, setLoadingStep] = useState('Setting up the board...');
   const avatarReadyResolverRef = useRef<(() => void) | null>(null);
   const gameReadyResolverRef = useRef<(() => void) | null>(null);
-  const loadingPhaseRef = useRef(0);
+  const quickPlayLoadingRef = useRef<QuickPlayLoadingReporter | null>(null);
   const [sessions, setSessions] = useState<StoredGameSession[]>(() => loadSessions());
   const [apiKeyModalOpen, setApiKeyModalOpen] = useState(() => !hasConvaiApiKey());
   const [apiKeyVersion, setApiKeyVersion] = useState(0);
@@ -282,53 +288,80 @@ function App() {
   }, []);
 
   const handleCoachAvatarReady = useCallback(() => {
-    debugLog('App', 'Avatar prewarm complete');
+    const reporter = quickPlayLoadingRef.current;
+    debugLog(
+      'Loading',
+      `Portrait ready — ${coach.name} is framed and animated${reporter ? ` ${reporter.elapsedLabel()}` : ''}`,
+    );
+    reporter?.setSubProgress(1, `Almost ready — ${coach.name} is nearly here...`, 'Portrait scene ready');
     avatarReadyResolverRef.current?.();
     avatarReadyResolverRef.current = null;
-  }, []);
+  }, [coach.name]);
 
-  const handleGameReady = useCallback(() => {
-    debugLog('App', 'Loading peel — coach is about to speak');
+  const handleGameReady = useCallback((reason = 'coach is about to speak') => {
+    const reporter = quickPlayLoadingRef.current;
+    debugLog('Loading', `Revealing board — ${reason}${reporter ? ` ${reporter.elapsedLabel()}` : ''}`);
+    reporter?.enterPhase(QUICK_PLAY_PHASES.REVEAL, 'Taking your seat...', `Board reveal: ${reason}`);
     gameReadyResolverRef.current?.();
     gameReadyResolverRef.current = null;
-  }, []);
-
-  const advanceLoading = useCallback((phase: number, progress: number, step: string) => {
-    if (phase < loadingPhaseRef.current) return;
-    loadingPhaseRef.current = phase;
-    setLoadingProgress(progress);
-    setLoadingStep(step);
   }, []);
 
   useEffect(() => {
     return chessConvai.onStatus((status) => {
       if (status.activeCoachId !== coachId) return;
-      if (screen !== 'loading' || loadingPhaseRef.current >= 5) return;
+      if (screen !== 'loading') return;
+      const reporter = quickPlayLoadingRef.current;
+      if (!reporter || reporter.getPhase() >= QUICK_PLAY_PHASES.GAME_SETUP) return;
+
       if (status.botReady) {
-        advanceLoading(4, 80, `Getting ${coach.name} ready...`);
+        reporter.enterPhase(
+          QUICK_PLAY_PHASES.CONVAI_READY,
+          `${coach.name} is ready at the board...`,
+          `[${coach.name}] Voice link ready`,
+        );
       } else if (status.connected) {
-        advanceLoading(3, 72, `Warming up ${coach.name}...`);
+        reporter.enterPhase(
+          QUICK_PLAY_PHASES.CONVAI_CONNECTED,
+          `${coach.name} is joining the session...`,
+          `[${coach.name}] Voice link connected`,
+        );
       } else if (status.connecting) {
-        advanceLoading(2, 55, `Connecting ${coach.name}...`);
+        reporter.enterPhase(
+          QUICK_PLAY_PHASES.CONVAI_CONNECT,
+          `Reaching ${coach.name}...`,
+          `[${coach.name}] Opening voice link`,
+        );
       }
     });
-  }, [coach.name, coachId, screen, advanceLoading]);
+  }, [coach.name, coachId, screen]);
 
   async function startQuickPlay() {
     if (!hasConvaiApiKey()) {
       setApiKeyModalOpen(true);
       return;
     }
-    debugLog('App', `startQuickPlay — mode=quick-play coach=${coach.id} difficulty=${difficultyId}`);
-    chessConvai.unlockAudio();
     const selectedCoach = coach;
+    debugLog('Loading', `Quick play started — coach=${selectedCoach.id} difficulty=${difficultyId}`);
+    chessConvai.unlockAudio();
     setScreen('loading');
-    loadingPhaseRef.current = 0;
-    advanceLoading(1, 25, `Loading ${selectedCoach.name}'s avatar...`);
+    const reporter = createQuickPlayLoadingReporter((progress, step) => {
+      setLoadingProgress(progress);
+      setLoadingStep(step);
+    });
+    quickPlayLoadingRef.current = reporter;
+    reporter.enterPhase(
+      QUICK_PLAY_PHASES.AVATAR,
+      `Bringing ${selectedCoach.name} into the room...`,
+      `Waiting for ${selectedCoach.name}'s portrait`,
+    );
     const avatarReady = new Promise<void>((resolve) => {
       avatarReadyResolverRef.current = resolve;
     });
-    debugLog('App', `Awaiting avatar prewarm for ${selectedCoach.name}`);
+    const avatarWaitStart = performance.now();
+    const avatarHeartbeat = window.setInterval(() => {
+      const secs = Math.round((performance.now() - avatarWaitStart) / 1000);
+      debugLog('Loading', `Still loading ${selectedCoach.name}'s portrait (+${secs}s)`);
+    }, 15000);
     let avatarTimedOut = false;
     await Promise.race([
       avatarReady.then(() => {
@@ -339,15 +372,23 @@ function App() {
         resolve();
       }, 90000)),
     ]);
+    window.clearInterval(avatarHeartbeat);
     avatarReadyResolverRef.current = null;
     if (avatarTimedOut) {
-      debugLog('App', `Avatar prewarm timed out after 90s — continuing to Convai connect`);
+      debugLog('Loading', `Portrait load timed out after 90s — continuing to voice link ${reporter.elapsedLabel()}`);
+    } else {
+      debugLog('Loading', `Portrait load finished ${reporter.elapsedLabel()}`);
     }
-    debugLog('App', `Avatar ready — connecting ${selectedCoach.name} to Convai`);
+    reporter.enterPhase(
+      QUICK_PLAY_PHASES.CONVAI_CONNECT,
+      `Reaching ${selectedCoach.name}...`,
+      `Opening voice link to ${selectedCoach.name}`,
+    );
     const gameReady = new Promise<void>((resolve) => {
       gameReadyResolverRef.current = resolve;
     });
     const staticPolicy = buildCoachInstruction(selectedCoach, getDifficulty(difficultyId), 'move');
+    const connectStarted = performance.now();
     await chessConvai.connectCoach(selectedCoach, {
       staticPolicy,
       waitForBotReady: true,
@@ -355,23 +396,34 @@ function App() {
       endUserId: resolveConvaiConnectionEndUserId(userIdentity),
       endUserMetadata: userIdentity?.endUserMetadata,
     });
+    const connectMs = Math.round(performance.now() - connectStarted);
     const convaiStatus = chessConvai.getStatus();
+    debugLog(
+      'Loading',
+      `Voice link finished in ${connectMs}ms — connected=${convaiStatus.connected} botReady=${convaiStatus.botReady} ${reporter.elapsedLabel()}`,
+    );
     if (!convaiStatus.connected || !convaiStatus.botReady) {
       debugLog(
-        'App',
-        `Convai not ready for ${selectedCoach.name} — connected=${convaiStatus.connected} botReady=${convaiStatus.botReady}. Starting game without voice.`,
+        'Loading',
+        `${selectedCoach.name} could not join by voice — starting the game quietly ${reporter.elapsedLabel()}`,
       );
-      gameReadyResolverRef.current?.();
-      gameReadyResolverRef.current = null;
+      handleGameReady('voice unavailable');
     } else {
-      debugLog('App', `Coach connected — finishing game setup before revealing board`);
-      advanceLoading(5, 92, `${selectedCoach.name} is about to speak...`);
+      reporter.enterPhase(
+        QUICK_PLAY_PHASES.GAME_SETUP,
+        'Laying out the pieces...',
+        'Voice link ready — preparing first game',
+      );
       await Promise.race([
         gameReady,
-        new Promise<void>((resolve) => window.setTimeout(resolve, 22000)),
+        new Promise<void>((resolve) => window.setTimeout(() => {
+          debugLog('Loading', `Welcome wait timed out after 22s ${reporter.elapsedLabel()}`);
+          resolve();
+        }, 22000)),
       ]);
       gameReadyResolverRef.current = null;
     }
+    quickPlayLoadingRef.current = null;
     setScreen('game');
   }
 
@@ -396,10 +448,14 @@ function App() {
           onSessionsChanged={refreshSessions}
           onCoachReady={handleCoachAvatarReady}
           onGameReady={handleGameReady}
+          quickPlayLoadingRef={quickPlayLoadingRef}
           key={`game-${coachId}-${coachingControlMode}`}
         />
         {screen === 'loading' && (
-          <LoadingScreen progress={loadingProgress} step={loadingStep} />
+          <>
+            <AvatarLoadProgress coachName={coach.name} reporterRef={quickPlayLoadingRef} />
+            <LoadingScreen progress={loadingProgress} step={loadingStep} />
+          </>
         )}
       </>
     );
@@ -503,6 +559,7 @@ function ChessGame({
   onSessionsChanged,
   onCoachReady,
   onGameReady,
+  quickPlayLoadingRef,
   isCovered = false,
 }: {
   coachId: CoachId;
@@ -512,7 +569,8 @@ function ChessGame({
   onBackToMenu: () => void;
   onSessionsChanged: () => void;
   onCoachReady?: () => void;
-  onGameReady?: () => void;
+  onGameReady?: (reason?: string) => void;
+  quickPlayLoadingRef?: MutableRefObject<QuickPlayLoadingReporter | null>;
   isCovered?: boolean;
 }) {
   const coach = getCoach(coachId);
@@ -639,21 +697,42 @@ function ChessGame({
     const openingInfo = addStudentContext(buildDynamicCoachInfo(freshGame, null, null, coach, difficulty), userIdentity);
     const welcomeInfo = addStudentContext(buildWelcomeDynamicInfo(freshGame, coach, difficulty, sessionIdRef.current), userIdentity);
     void (async () => {
+      const reporter = quickPlayLoadingRef?.current;
+      reporter?.enterPhase(
+        QUICK_PLAY_PHASES.GAME_SETUP,
+        'Laying out the pieces...',
+        'Starting new game session',
+      );
       let peeled = false;
-      const peelLoading = () => {
+      let peelReason = 'welcome finished';
+      const peelLoading = (reason: string) => {
         if (peeled) return;
         peeled = true;
-        onGameReady?.();
+        peelReason = reason;
+        onGameReady?.(reason);
       };
 
       const unsubResponse = chessConvai.onResponse((response) => {
-        if (response.coachId === coach.id && response.text.trim()) peelLoading();
+        if (response.coachId !== coach.id || !response.text.trim()) return;
+        debugLog(
+          'Loading',
+          `Welcome text ready (${response.text.trim().length} chars) — holding loading until ${coach.name} speaks ${reporter?.elapsedLabel() ?? ''}`,
+        );
+        reporter?.enterPhase(
+          QUICK_PLAY_PHASES.WELCOME,
+          `${coach.name} is about to greet you...`,
+          'Welcome text ready — waiting for voice',
+        );
+        reporter?.setSubProgress(0.55, `${coach.name} is about to greet you...`);
       });
       const unsubStatus = chessConvai.onStatus((status) => {
-        if (status.activeCoachId === coach.id && status.speaking) peelLoading();
+        if (status.activeCoachId !== coach.id || !status.speaking) return;
+        debugLog('Loading', `${coach.name} started speaking — revealing board ${reporter?.elapsedLabel() ?? ''}`);
+        peelLoading(`${coach.name} started speaking`);
       });
 
       try {
+        reporter?.setSubProgress(0.35, 'Laying out the pieces...', 'Seeding coach context');
         const spoken = await chessConvai.beginNewGame(
           coach,
           difficulty,
@@ -662,15 +741,23 @@ function ChessGame({
           userIdentity,
           welcomeInfo,
         );
-        if (spoken) setCoachLine(spoken);
+        if (spoken) {
+          reporter?.setSubProgress(0.85, `${coach.name} is about to greet you...`, 'Welcome turn complete');
+          setCoachLine(spoken);
+        }
       } finally {
         unsubResponse();
         unsubStatus();
-        peelLoading();
+        if (!peeled) {
+          debugLog('Loading', `Welcome finished without speech signal — revealing board anyway ${reporter?.elapsedLabel() ?? ''}`);
+          reporter?.enterPhase(QUICK_PLAY_PHASES.REVEAL, 'Taking your seat...', 'Welcome finished without speech signal');
+          peelLoading(peelReason);
+        }
+        debugLog('Loading', `Welcome flow complete — peel reason: ${peelReason} ${reporter?.elapsedLabel() ?? ''}`);
         setWelcomeDelivered(true);
       }
     })();
-  }, [isCovered, convaiStatus.botReady, coach, difficulty, userIdentity, onGameReady]);
+  }, [isCovered, convaiStatus.botReady, coach, difficulty, userIdentity, onGameReady, quickPlayLoadingRef]);
 
   useEffect(() => {
     if (isCovered || !welcomeDelivered) return;
