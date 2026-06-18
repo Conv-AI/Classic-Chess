@@ -26,7 +26,7 @@ Thumbs.db
 demo/
 docs/prompts.txt
 docs/AGENT_HANDOFF.md
-
+docs/convai-demo-tutorial-script.md
 # Local dataset captured via `npm run dev:dataset`
 dataset.json
 Logs

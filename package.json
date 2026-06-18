@@ -8,7 +8,8 @@
     "dev:dataset": "vite --mode dataset",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "test": "vitest run"
+    "test": "vitest run",
+    "portraits:thumbs": "node scripts/generate-coach-portrait-thumbs.mjs"
   },
   "keywords": [],
   "author": "",
@@ -17,6 +18,7 @@
     "@convai/web-sdk": "^1.3.0",
     "@react-three/drei": "^9.88.0",
     "@react-three/fiber": "^8.15.0",
+    "@react-three/postprocessing": "^2.16.0",
     "chess.js": "^1.4.0",
     "google-auth-library": "^10.7.0",
     "lucide-react": "^1.14.0",
@@ -29,6 +31,7 @@
     "@types/react": "^18.2.0",
     "@types/react-dom": "^18.2.0",
     "@vitejs/plugin-react": "^4.2.1",
+    "sharp": "^0.35.1",
     "typescript": "^5.3.3",
     "vite": "^5.4.21",
     "vitest": "^1.6.1"

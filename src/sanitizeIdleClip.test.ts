@@ -51,4 +51,28 @@ describe('sanitizePortraitIdleClip', () => {
     const out = sanitized.tracks[0] as THREE.VectorKeyframeTrack;
     expect(Array.from(out.values)).toEqual(Array.from(hip.values));
   });
+
+  it('locks eye rotation to the opening pose instead of stripping it', () => {
+    const clip = new THREE.AnimationClip('idle', 1, [
+      new THREE.VectorKeyframeTrack('CC_Base_L_Eye.rotation', [0, 1], [0.1, 0, 0, 0.2, 0, 0]),
+      new THREE.QuaternionKeyframeTrack('CC_Base_R_Eye.quaternion', [0, 1], [0, 0, 0, 1, 0.1, 0, 0, 1]),
+    ]);
+    const sanitized = sanitizePortraitIdleClip(clip, 'Sofia');
+    expect(sanitized.tracks).toHaveLength(2);
+
+    const left = sanitized.tracks[0] as THREE.VectorKeyframeTrack;
+    expect(Array.from(left.values).map((v) => Number(v.toFixed(2)))).toEqual([0.1, 0, 0, 0.1, 0, 0]);
+
+    const right = sanitized.tracks[1] as THREE.QuaternionKeyframeTrack;
+    expect(Array.from(right.values).map((v) => Number(v.toFixed(2)))).toEqual([0, 0, 0, 1, 0, 0, 0, 1]);
+  });
+
+  it('locks head rotation to the opening pose', () => {
+    const clip = new THREE.AnimationClip('idle', 2, [
+      new THREE.VectorKeyframeTrack('CC_Base_Head.rotation', [0, 1], [0, 0.1, 0, 0.5, 0.3, 0]),
+    ]);
+    const sanitized = sanitizePortraitIdleClip(clip, 'Sofia');
+    const head = sanitized.tracks[0] as THREE.VectorKeyframeTrack;
+    expect(Array.from(head.values).map((v) => Number(v.toFixed(2)))).toEqual([0, 0.1, 0, 0, 0.1, 0]);
+  });
 });

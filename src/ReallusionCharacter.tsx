@@ -6,17 +6,19 @@ import type { CoachId } from './coachConfig';
 import { chessConvai } from './convaiManager';
 import { applyCC4TeethMotion, decayCC4TeethMotion } from './cc4TeethMotion';
 import { debugLog } from './debugLog';
+import { applyPortraitBlink, createPortraitBlinkState, resetPortraitBlinkMorphs } from './portraitBlink';
 import { sanitizePortraitIdleClip } from './sanitizeIdleClip';
 
 const MATERIAL_TUNING = {
   hairAlphaTest: 0.16,
   roughnessClamp: 0.92,
-  envMapIntensity: 0.85,
+  envMapIntensity: 0.48,
 } as const;
 
 const HAIR_NAME_PATTERN = /hair|lash|brow|beard|scalp|fur/i;
 
-const TEETH_VISEME_BOOST = 1.35;
+const TEETH_MORPH_ATTENUATION = 0.72;
+const TEETH_OPEN_CAP = 0.62;
 
 const LIPSYNC_MESH_PATTERN = /CC_Base_(Body|Teeth|Tongue)/i;
 const LIPSYNC_LOG_INTERVAL_MS = 2000;
@@ -32,12 +34,12 @@ const LIPSYNC_PROFILES: Record<string, {
 }> = {
   Vincent: { overall: 0.95, jawMorph: 1.3, jawBone: 0, openVisemes: 1.2, wideVisemes: 0.2, smileFrown: 0.25, pressPucker: 0.75 },
   Tyler: { overall: 1.0, jawMorph: 1.15, jawBone: 0, openVisemes: 1.1, wideVisemes: 0.6, smileFrown: 0.5, pressPucker: 0.65 },
-  Cassandra: { overall: 1.0, jawMorph: 1.15, jawBone: 0, openVisemes: 1.1, wideVisemes: 0.6, smileFrown: 0.5, pressPucker: 0.65 },
+  Cassandra: { overall: 0.95, jawMorph: 1.05, jawBone: 0, openVisemes: 0.92, wideVisemes: 0.55, smileFrown: 0.5, pressPucker: 0.65 },
   Danielle: { overall: 1.0, jawMorph: 1.3, jawBone: 0, openVisemes: 1.15, wideVisemes: 0.55, smileFrown: 0.6, pressPucker: 0.55 },
 };
 
 const ARKIT_TO_CC4: Array<[number, string, number]> = [
-  [17, 'Jaw_Open', 0.85], [17, 'V_Open', 0.72], [17, 'V_Lip_Open', 0.58],
+  [17, 'Jaw_Open', 0.78], [17, 'V_Open', 0.62], [17, 'V_Lip_Open', 0.5],
   [37, 'Mouth_Down_Lower_L', 0.6], [38, 'Mouth_Down_Lower_R', 0.6],
   [37, 'Mouth_LowerLip_Depress_L', 0.68], [38, 'Mouth_LowerLip_Depress_R', 0.68],
   [37, 'Mouth_Down', 0.5], [38, 'Mouth_Down', 0.5],
@@ -77,19 +79,29 @@ const ARKIT_TO_CC4: Array<[number, string, number]> = [
   [21, 'Mouth_R', 0.5], [22, 'Mouth_L', 0.5],
   [21, 'Mouth_Right', 0.5], [22, 'Mouth_Left', 0.5],
   [51, 'Tongue_Out', 0.8], [51, 'V_Tongue_Out', 0.5],
-  [0, 'Eye_Blink_L', 1.0], [7, 'Eye_Blink_R', 1.0],
-  [5, 'Eye_Squint_L', 0.7], [12, 'Eye_Squint_R', 0.7],
-  [6, 'Eye_Wide_L', 0.85], [13, 'Eye_Wide_R', 0.85],
-  [41, 'Brow_Drop_L', 0.8], [42, 'Brow_Drop_R', 0.8],
-  [41, 'Brow_Down_L', 0.8], [42, 'Brow_Down_R', 0.8],
-  [43, 'Brow_Raise_Inner_L', 0.7], [43, 'Brow_Raise_Inner_R', 0.7],
-  [43, 'Brow_Raise_In_L', 0.7], [43, 'Brow_Raise_In_R', 0.7],
-  [44, 'Brow_Raise_Outer_L', 0.7], [45, 'Brow_Raise_Outer_R', 0.7],
-  [49, 'Nose_Sneer_L', 0.8], [50, 'Nose_Sneer_R', 0.8],
-  [49, 'Nose_Nasolabial_Deepen_L', 0.7], [50, 'Nose_Nasolabial_Deepen_R', 0.7],
-  [47, 'Cheek_Raise_L', 0.6], [48, 'Cheek_Raise_R', 0.6],
-  [47, 'Eye_Cheek_Raise_L', 0.6], [48, 'Eye_Cheek_Raise_R', 0.6],
 ];
+
+/** Upper-face ARKit channels are noisy during TTS — keep brows/eyes neutral; blinks are procedural. */
+const PORTRAIT_NEUTRAL_MORPHS = [
+  'Eye_Squint_L', 'Eye_Squint_R', 'Eye_Wide_L', 'Eye_Wide_R',
+  'Brow_Drop_L', 'Brow_Drop_R', 'Brow_Down_L', 'Brow_Down_R',
+  'Brow_Raise_Inner_L', 'Brow_Raise_Inner_R', 'Brow_Raise_In_L', 'Brow_Raise_In_R',
+  'Brow_Raise_Outer_L', 'Brow_Raise_Outer_R',
+  'Nose_Sneer_L', 'Nose_Sneer_R', 'Nose_Nasolabial_Deepen_L', 'Nose_Nasolabial_Deepen_R',
+  'Eye_Cheek_Raise_L', 'Eye_Cheek_Raise_R', 'Cheek_Raise_L', 'Cheek_Raise_R',
+] as const;
+
+function resetPortraitNeutralMorphs(root: THREE.Object3D): void {
+  root.traverse((child) => {
+    const mesh = child as THREE.SkinnedMesh;
+    if (!mesh.isSkinnedMesh || !mesh.morphTargetDictionary || !mesh.morphTargetInfluences) return;
+    if (!/body/i.test(mesh.name)) return;
+    for (const name of PORTRAIT_NEUTRAL_MORPHS) {
+      const index = mesh.morphTargetDictionary[name];
+      if (index !== undefined) mesh.morphTargetInfluences[index] = 0;
+    }
+  });
+}
 
 function recoverMorphTargetNames(root: THREE.Object3D, gltfJson: any) {
   if (!gltfJson?.meshes) return;
@@ -172,6 +184,7 @@ type LipsyncApplyStats = {
 
 function applyArkitToCC4(frame: Float32Array, root: THREE.Object3D, assetName: string): LipsyncApplyStats {
   const profile = LIPSYNC_PROFILES[assetName] ?? LIPSYNC_PROFILES.Danielle;
+  resetPortraitNeutralMorphs(root);
   const accum: Record<string, number> = {};
   for (const [index, name, scale] of ARKIT_TO_CC4) {
     const value = (frame[index] ?? 0) * scale * getMorphCategoryMultiplier(name, profile) * profile.overall;
@@ -197,9 +210,10 @@ function applyArkitToCC4(frame: Float32Array, root: THREE.Object3D, assetName: s
     for (const [name, value] of Object.entries(accum)) {
       const morphIndex = mesh.morphTargetDictionary[name];
       if (morphIndex !== undefined) {
-        const applied = isTeethMesh && name === 'V_Open'
-          ? Math.min(1, value * TEETH_VISEME_BOOST)
-          : value;
+        let applied = value;
+        if (isTeethMesh) {
+          applied = Math.min(TEETH_OPEN_CAP, value * TEETH_MORPH_ATTENUATION);
+        }
         mesh.morphTargetInfluences[morphIndex] = applied;
         if (isBodyMesh) {
           appliedOnBody++;
@@ -213,7 +227,7 @@ function applyArkitToCC4(frame: Float32Array, root: THREE.Object3D, assetName: s
         if (fallbackIndex !== undefined) {
           mesh.morphTargetInfluences[fallbackIndex] = Math.max(
             mesh.morphTargetInfluences[fallbackIndex],
-            Math.min(1, value * TEETH_VISEME_BOOST),
+            Math.min(TEETH_OPEN_CAP, value * TEETH_MORPH_ATTENUATION),
           );
         }
       }
@@ -305,6 +319,8 @@ export default function ReallusionCharacter({ coachId, assetName, charUrl, animU
   const wasDecayingRef = useRef(false);
   const lipsyncLogAtRef = useRef(0);
   const noFrameLogAtRef = useRef(0);
+  const blinkRef = useRef(createPortraitBlinkState(0, Number.POSITIVE_INFINITY));
+  const portraitLiveRef = useRef(false);
   const gltf = useGLTF(charUrl) as any;
   const { scene } = gltf;
   const { animations } = useGLTF(animUrl);
@@ -321,6 +337,7 @@ export default function ReallusionCharacter({ coachId, assetName, charUrl, animU
   }, [gltf, scene, coachId]);
 
   useEffect(() => {
+    portraitLiveRef.current = false;
     if (!groupRef.current) return;
     debugLog('ReallusionCharacter', `Framing character coachId=${coachId} assetName=${assetName}`);
     groupRef.current.position.set(0, 0, 0);
@@ -335,6 +352,9 @@ export default function ReallusionCharacter({ coachId, assetName, charUrl, animU
     groupRef.current.position.y = targetTop - box.max.y + framing.portraitCropBias;
     groupRef.current.position.x = framing.horizontalOffset;
     groupRef.current.updateMatrixWorld(true);
+    resetPortraitBlinkMorphs(groupRef.current);
+    blinkRef.current = createPortraitBlinkState();
+    portraitLiveRef.current = true;
     debugLog('ReallusionCharacter', `onReady firing for coachId=${coachId}`);
     onReady?.();
   }, [scene, framing, onReady, coachId, assetName]);
@@ -369,22 +389,20 @@ export default function ReallusionCharacter({ coachId, assetName, charUrl, animU
           `coach=${coachId} asset=${assetName} arkitJaw=${stats.jawArkit.toFixed(3)} targets=${stats.morphTargets} bodyApplied=${stats.appliedOnBody} bodyJawOpen=${stats.bodyJawOpen.toFixed(3)} bodyVOpen=${stats.bodyVOpen.toFixed(3)} speaking=${speaking}`,
         );
       }
-      return;
-    }
-
-    if (speaking) {
+    } else if (speaking) {
       const now = performance.now();
       if (now - noFrameLogAtRef.current >= LIPSYNC_LOG_INTERVAL_MS) {
         noFrameLogAtRef.current = now;
         debugLog('Lipsync', `coach=${coachId} speaking=true but no blendshape frame this tick`);
       }
-      return;
-    }
-
-    if (hadLipsyncRef.current || wasDecayingRef.current) {
+    } else if (hadLipsyncRef.current || wasDecayingRef.current) {
       decayMorphs(groupRef.current);
       hadLipsyncRef.current = false;
       wasDecayingRef.current = true;
+    }
+
+    if (portraitLiveRef.current) {
+      applyPortraitBlink(groupRef.current, performance.now(), blinkRef.current);
     }
   });
 

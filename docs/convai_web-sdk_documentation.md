@@ -1,3 +1,7 @@
+# Convai Web SDK — implementation reference
+
+> **Classic Chess usage:** this repo wires the SDK through `src/convaiManager.ts` (connection pool, dynamic info, coaching modes, lipsync queue). For how the chess game uses Convai end-to-end — including portrait rendering and mouth-only ARKit mapping — see [technical-blog.md](technical-blog.md) and the README **Portrait & Lipsync** section.
+
 @convai/web-sdk is a TypeScript-first SDK for building real-time conversational AI experiences with Convai characters on the web. It supports:
 
 React applications with ready-to-use hooks and widget components

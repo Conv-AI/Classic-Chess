@@ -5,6 +5,7 @@ import type { CoachConfig } from './coachConfig';
 import { chessConvai } from './convaiManager';
 import { debugLog } from './debugLog';
 import ReallusionCharacter from './ReallusionCharacter';
+import PortraitScene from './PortraitScene';
 import Tooltip from './Tooltip';
 import { playUiSound, unlockUiAudio } from './uiSounds';
 
@@ -31,6 +32,7 @@ type Props = {
   onAddToDataset?: () => void;
   chatOpen?: boolean;
   onChatToggle?: () => void;
+  mic?: ReactNode;
 };
 
 type CharacterErrorBoundaryProps = {
@@ -70,15 +72,18 @@ export default function CoachCard({
   onAddToDataset,
   chatOpen = false,
   onChatToggle,
+  mic,
 }: Props) {
   const modelUrl = assetUrl(coach.modelFile);
   const idleUrl = assetUrl(coach.idleFile);
   const framing = FRAMING_BY_ASSET[coach.assetName] ?? FRAMING_BY_ASSET.Danielle;
   const lineRef = useRef<HTMLParagraphElement>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
+  const characterWindowRef = useRef<HTMLDivElement>(null);
   const readyNotifiedRef = useRef(false);
   const [characterReady, setCharacterReady] = useState(false);
   const [characterFailed, setCharacterFailed] = useState(false);
+  const [canvasDpr, setCanvasDpr] = useState(() => Math.min(Math.max(window.devicePixelRatio || 1, 2), 2.5));
   const [isMobileCanvas] = useState(() => (
     typeof window !== 'undefined' &&
     window.matchMedia('(pointer: coarse), (max-width: 700px)').matches
@@ -102,6 +107,29 @@ export default function CoachCard({
   useGLTF.preload(modelUrl);
   useGLTF.preload(idleUrl);
   debugLog('CoachCard', `Rendering coach=${coach.id} model=${coach.modelFile}`);
+
+  useEffect(() => {
+    const el = characterWindowRef.current;
+    if (!el) return;
+
+    const updateDpr = () => {
+      const height = el.clientHeight;
+      const ratio = window.devicePixelRatio || 1;
+      let target = Math.max(2, ratio);
+      if (height < 200) target = Math.max(target, 2.75);
+      else if (height < 280) target = Math.max(target, 2.35);
+      setCanvasDpr(Math.min(target, 3));
+    };
+
+    updateDpr();
+    const observer = new ResizeObserver(updateDpr);
+    observer.observe(el);
+    window.addEventListener('resize', updateDpr);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener('resize', updateDpr);
+    };
+  }, []);
 
   const MAX_BUBBLE_HEIGHT = 210;
   const characterResetKey = `${coach.id}:${modelUrl}:${idleUrl}`;
@@ -196,43 +224,42 @@ export default function CoachCard({
 
   return (
     <section className="coach-card character-card" aria-label={`${coach.name} chess coach`}>
-      <div className={`character-window${characterReady ? ' is-ready' : ''}${characterFailed ? ' has-error' : ''}`}>
+      <div
+        ref={characterWindowRef}
+        className={`character-window${characterReady ? ' is-ready' : ''}${characterFailed ? ' has-error' : ''}`}
+      >
         <Canvas
           camera={{ position: [0, 1.4, 0.9], fov: 36 }}
-          dpr={isMobileCanvas ? [1, 1.35] : [1.25, 2]}
+          dpr={isMobileCanvas ? Math.min(canvasDpr, 2) : canvasDpr}
           gl={{ antialias: true, alpha: false, powerPreference: 'high-performance' }}
           style={{ background: coach.bgColor }}
-          onCreated={({ camera, gl, scene }) => {
+          onCreated={({ camera, gl }) => {
             debugLog('CoachCard', `3D scene ready for coach=${coach.id}`);
             camera.lookAt(0, 1.4, 0);
-            scene.background = null;
             gl.setClearColor(coach.bgColor, 1);
-            gl.toneMappingExposure = 1.08;
           }}
         >
-          <ambientLight intensity={0.9} />
-          <directionalLight position={[1, 2, 2]} intensity={1.1} />
-          <directionalLight position={[-1, 1, 0]} intensity={0.45} />
-          <pointLight position={[0, 1.5, 1]} intensity={0.35} color="#ffe0c0" />
-          <CharacterErrorBoundary resetKey={characterResetKey} onError={handleCharacterError}>
-            <Suspense fallback={null}>
-              <ReallusionCharacter
-                coachId={coach.id as import('./coachConfig').CoachId}
-                assetName={coach.assetName}
-                charUrl={modelUrl}
-                animUrl={idleUrl}
-                onReady={handleCharacterReady}
-                framing={{
-                  cameraZ: 0.9,
-                  fov: 36,
-                  lookAtY: 1.4,
-                  topInsetWorld: framing.topInsetWorld,
-                  portraitCropBias: framing.portraitCropBias,
-                  horizontalOffset: framing.horizontalOffset,
-                }}
-              />
-            </Suspense>
-          </CharacterErrorBoundary>
+          <PortraitScene bgColor={coach.bgColor} enablePostProcessing={!isMobileCanvas}>
+            <CharacterErrorBoundary resetKey={characterResetKey} onError={handleCharacterError}>
+              <Suspense fallback={null}>
+                <ReallusionCharacter
+                  coachId={coach.id as import('./coachConfig').CoachId}
+                  assetName={coach.assetName}
+                  charUrl={modelUrl}
+                  animUrl={idleUrl}
+                  onReady={handleCharacterReady}
+                  framing={{
+                    cameraZ: 0.9,
+                    fov: 36,
+                    lookAtY: 1.4,
+                    topInsetWorld: framing.topInsetWorld,
+                    portraitCropBias: framing.portraitCropBias,
+                    horizontalOffset: framing.horizontalOffset,
+                  }}
+                />
+              </Suspense>
+            </CharacterErrorBoundary>
+          </PortraitScene>
         </Canvas>
         {!characterReady && (
           <div className="character-loading" aria-live="polite">
@@ -254,6 +281,7 @@ export default function CoachCard({
           <span>{status}</span>
         </div>
         <div className="caption-actions">
+          {mic}
           {onChatToggle && (
             <Tooltip text="Ask your coach about the position" placement="top">
               <button

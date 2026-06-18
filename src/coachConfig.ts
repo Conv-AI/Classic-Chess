@@ -5,11 +5,16 @@ export type CoachId = BuiltinCoachId | `custom-${string}`;
 
 export type DifficultyId = 'new' | 'beginner' | 'intermediate' | 'advanced' | 'expert';
 
+export const DEFAULT_PORTRAIT_FILE = 'coach-portraits/leila.png';
+
 export type CoachConfig = {
   id: CoachId;
   name: string;
   title: string;
   assetName: 'Vincent' | 'Tyler' | 'Cassandra' | 'Danielle';
+  portraitFile: string;
+  /** Vertical focus for menu headshot crop (T-pose sources), percent from top. */
+  portraitFocusY?: number;
   modelFile: string;
   idleFile: string;
   /** LTM-enabled Convai character for signed-in Google users. */
@@ -96,6 +101,8 @@ export const COACHES: CoachConfig[] = [
     name: 'Magnus',
     title: 'The Grandmaster',
     assetName: 'Vincent',
+    portraitFile: 'coach-portraits/magnus.png',
+    portraitFocusY: 12,
     modelFile: 'magnus.glb',
     idleFile: 'magnus-animations.glb',
     characterId: 'da1ff068-477c-11f1-a121-42010a7be02c',
@@ -113,6 +120,8 @@ export const COACHES: CoachConfig[] = [
     name: 'Sofia',
     title: 'The Tactician',
     assetName: 'Cassandra',
+    portraitFile: 'coach-portraits/sofia.png',
+    portraitFocusY: 14,
     modelFile: 'sofia.glb',
     idleFile: 'sofia-animations.glb',
     characterId: '9f3c8e20-477c-11f1-a6c8-42010a7be02c',
@@ -130,6 +139,8 @@ export const COACHES: CoachConfig[] = [
     name: 'Arjun',
     title: 'The Patient Teacher',
     assetName: 'Tyler',
+    portraitFile: 'coach-portraits/arjun.png',
+    portraitFocusY: 15,
     modelFile: 'arjun.glb',
     idleFile: 'arjun-animations.glb',
     characterId: 'f465b7aa-477c-11f1-b82a-42010a7be02c',
@@ -147,6 +158,8 @@ export const COACHES: CoachConfig[] = [
     name: 'Leila',
     title: 'The Strategist',
     assetName: 'Danielle',
+    portraitFile: 'coach-portraits/leila.png',
+    portraitFocusY: 13,
     modelFile: 'leila.glb',
     idleFile: 'leila-animations.glb',
     characterId: 'c1f0a244-477c-11f1-acd0-42010a7be02c',
@@ -184,8 +197,21 @@ export function resolveConvaiCharacterId(coach: CoachConfig, signedInWithLtm: bo
   return coach.guestCharacterId?.trim() || coach.characterId;
 }
 
-export const DEFAULT_COACH = COACHES[3]; // Leila
+export const DEFAULT_COACH = COACHES[1]; // Sofia
 export const DEFAULT_DIFFICULTY = DIFFICULTIES[1];
+
+export function getCoachPortraitUrl(coach: Pick<CoachConfig, 'portraitFile'>): string {
+  const base = import.meta.env.BASE_URL.replace(/\/?$/, '/');
+  return `${base}${coach.portraitFile || DEFAULT_PORTRAIT_FILE}`;
+}
+
+export function getCoachPortraitThumbUrl(coach: Pick<CoachConfig, 'portraitFile'>): string {
+  const portrait = coach.portraitFile || DEFAULT_PORTRAIT_FILE;
+  if (!/coach-portraits\/[^/]+\.png$/i.test(portrait)) {
+    return getCoachPortraitUrl(coach);
+  }
+  return getCoachPortraitUrl({ portraitFile: portrait.replace(/\.png$/i, '-thumb.png') });
+}
 
 export function getAllCoaches(): CoachConfig[] {
   const custom = loadCustomCoaches().map(storedCoachToConfig);

@@ -18,6 +18,7 @@ import { chessConvai } from './convaiManager';
 import { copyLogToClipboard, debugLog } from './debugLog';
 import AvatarLoadProgress from './AvatarLoadProgress';
 import CoachCard from './CoachCard';
+import MicButton from './MicButton';
 import DatasetScreen from './DatasetScreen';
 import LoadingScreen from './LoadingScreen';
 import {
@@ -26,6 +27,7 @@ import {
   type QuickPlayLoadingReporter,
 } from './quickPlayLoading';
 import MenuScreen from './MenuScreen';
+import { ScrollWhenClipped } from './useOverflowScroll';
 import { PUZZLES, puzzleScore, type Puzzle } from './puzzles';
 import { stockfishEngine } from './stockfishEngine';
 import {
@@ -212,37 +214,11 @@ function useWheelScrollBridge() {
   }, []);
 }
 
-function MicButton({ className }: { className?: string }) {
-  const [micOn, setMicOn] = useState(false);
-
-  useEffect(() => {
-    return chessConvai.onStatus((s) => setMicOn(s.micEnabled));
-  }, []);
-
-  function toggle() {
-    unlockUiAudio();
-    playUiSound('toggle');
-    void chessConvai.setMicEnabled(!micOn);
-  }
-
-  return (
-    <Tooltip text={micOn ? 'Mute microphone' : 'Enable microphone'} placement="bottom">
-      <button
-        className={`mic-button ${micOn ? 'mic-on' : ''} ${className ?? ''}`}
-        onClick={toggle}
-        aria-label={micOn ? 'Mute microphone' : 'Enable microphone'}
-      >
-        {micOn ? '🎙' : '🎤'}
-      </button>
-    </Tooltip>
-  );
-}
-
 function App() {
   useWheelScrollBridge();
 
   const [screen, setScreen] = useState<Screen>('menu');
-  const [coachId, setCoachId] = useState<CoachId>('leila');
+  const [coachId, setCoachId] = useState<CoachId>('sofia');
   const [difficultyId, setDifficultyId] = useState<DifficultyId>('intermediate');
   const [coachingControlMode, setCoachingControlModeState] = useState<CoachingControlMode>(() => loadCoachingControlMode());
   const [loadingProgress, setLoadingProgress] = useState(0);
@@ -1174,6 +1150,7 @@ function ChessGame({
             onAddToDataset={DATASET_TOOLS_ENABLED ? openSaveModal : undefined}
             chatOpen={chatOpen}
             onChatToggle={() => setChatOpen((open) => !open)}
+            mic={<MicButton className="coach-mic-btn" />}
           />
 
           <div className="analysis-panel invisible-scroll">
@@ -1352,7 +1329,6 @@ function ChessGame({
         <h1>Classic Chess</h1>
         <div className="topbar-actions">
           <span>{difficulty.label}</span>
-          <MicButton />
           <CopyLogsButton />
         </div>
       </header>
@@ -1366,6 +1342,7 @@ function ChessGame({
           onAddToDataset={DATASET_TOOLS_ENABLED ? openSaveModal : undefined}
           chatOpen={chatOpen}
           onChatToggle={() => setChatOpen((open) => !open)}
+          mic={<MicButton className="coach-mic-btn" />}
         />
 
         <section className={`game-stage${yourTurnPulse ? ' your-turn-pulse' : ''}`} aria-label="Chess board">
@@ -1380,25 +1357,27 @@ function ChessGame({
 
         <aside className="side-panel">
           <div className="panel-card turn-card">
-            <p className="eyebrow">Game State</p>
-            <h2>{game.turn() === 'w' ? 'Your move' : `${coach.name} to move`}</h2>
-            <p>{getStatus(game, coach.name)}</p>
-            {hintText && <p className="hint-text">{hintText}</p>}
-            <button
-              className="primary-action"
-              onClick={() => void askHint()}
-              disabled={game.turn() !== 'w' || thinking || gameEnded}
-            >
-              Ask Hint {hintLevel ? `(${hintLevel}/3)` : ''}
-            </button>
-            <button className="ghost-action" onClick={resetGame}>New game</button>
-            <button
-              className="ghost-action danger-action"
-              onClick={() => { if (!gameEnded) setShowResignConfirm(true); }}
-              disabled={gameEnded}
-            >
-              Resign
-            </button>
+            <ScrollWhenClipped className="turn-card-body">
+              <p className="eyebrow">Game State</p>
+              <h2>{game.turn() === 'w' ? 'Your move' : `${coach.name} to move`}</h2>
+              <p>{getStatus(game, coach.name)}</p>
+              {hintText && <p className="hint-text">{hintText}</p>}
+              <button
+                className="primary-action"
+                onClick={() => void askHint()}
+                disabled={game.turn() !== 'w' || thinking || gameEnded}
+              >
+                Ask Hint {hintLevel ? `(${hintLevel}/3)` : ''}
+              </button>
+              <button className="ghost-action" onClick={resetGame}>New game</button>
+              <button
+                className="ghost-action danger-action"
+                onClick={() => { if (!gameEnded) setShowResignConfirm(true); }}
+                disabled={gameEnded}
+              >
+                Resign
+              </button>
+            </ScrollWhenClipped>
           </div>
 
           <div className="panel-card move-card">
@@ -1952,7 +1931,6 @@ function PuzzleScreen({
           <Tooltip text="Total progress for this difficulty" placement="bottom">
             <span>{completedIds.length}/{allForDifficulty.length}</span>
           </Tooltip>
-          <MicButton />
         </div>
       </header>
       <div className="training-layout">
@@ -1964,6 +1942,7 @@ function PuzzleScreen({
             onReady={handleAvatarReady}
             chatOpen={chatOpen}
             onChatToggle={() => setChatOpen((o) => !o)}
+            mic={<MicButton className="coach-mic-btn" />}
           />
           <div className="puzzle-theme-label">
             <span className="eyebrow">{reviewMode ? 'Review' : puzzle.theme}</span>

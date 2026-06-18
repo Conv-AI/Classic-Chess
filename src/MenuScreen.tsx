@@ -1,6 +1,6 @@
 import { useState, type ReactNode } from 'react';
 import { KeyRound } from 'lucide-react';
-import { getAllCoaches, DIFFICULTIES, suggestedDifficultyForCoach, type CoachId, type DifficultyId } from './coachConfig';
+import { getAllCoaches, DIFFICULTIES, suggestedDifficultyForCoach, getCoachPortraitThumbUrl, type CoachId, type DifficultyId } from './coachConfig';
 import { maskConvaiApiKey, getConvaiApiKey } from './convaiApiKey';
 import { PUZZLES } from './puzzles';
 import type { CoachingControlMode } from './storage';
@@ -157,8 +157,22 @@ export default function MenuScreen({
                   }}
                   style={{ borderColor: coach.id === coachId ? coach.accent : undefined }}
                 >
-                  <span>{coach.name}</span>
-                  <small>{coach.title}</small>
+                  <span className="coach-picker-avatar-wrap" aria-hidden="true">
+                    <img
+                      className="coach-picker-avatar"
+                      src={getCoachPortraitThumbUrl(coach)}
+                      alt=""
+                      width={192}
+                      height={192}
+                      decoding="async"
+                      draggable={false}
+                      style={{ objectPosition: `center ${coach.portraitFocusY ?? 14}%` }}
+                    />
+                  </span>
+                  <span className="coach-picker-label">
+                    <span>{coach.name}</span>
+                    <small>{coach.title}</small>
+                  </span>
                 </button>
               ))}
             </div>

@@ -31,6 +31,8 @@ Important files:
 - `src/App.tsx`: stores auth state and passes identity into game/puzzle flows.
 - `src/convaiManager.ts`: passes `endUserId`/`endUserMetadata` to `ConvaiClient`, MAU recovery, welcome delivery, and writes memories.
 - `src/convaiEndUsers.ts`: list/delete end-user helpers and MAU error detection.
+- `src/coachConfig.ts`: coach personas, portrait paths, default coach (Sofia), guest character ID resolution.
+- `src/MenuScreen.tsx`: menu coach picker (headshot thumbnails are cosmetic; unrelated to LTM).
 - `vite.config.ts`: local auth endpoints and Google token verification.
 - `package.json`: adds `google-auth-library`.
 

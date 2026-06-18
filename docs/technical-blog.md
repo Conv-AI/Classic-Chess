@@ -151,19 +151,20 @@ The overlay peels before welcome speech. After the board appears, the app waits 
 
 ## Reallusion Avatar Lipsync
 
-Convai provides ARKit-style blendshape frames. Reallusion CC4 avatars use their own morph target names. The bridge between them is an `ARKIT_TO_CC4` mapping table.
+Convai provides ARKit-style blendshape frames. Reallusion CC4 avatars use their own morph target names. The bridge between them is an `ARKIT_TO_CC4` mapping table in `src/ReallusionCharacter.tsx`.
 
 Each frame:
 
 ```txt
 Convai ARKit frame
-  -> map ARKit index to CC4 morph name
-  -> scale the value
-  -> apply it to the matching SkinnedMesh morph target
+  -> map ARKit index to CC4 morph name (mouth / jaw visemes only)
+  -> scale the value per asset lipsync profile
+  -> apply it to CC_Base_Body / Teeth / Tongue morph targets
   -> decay morphs smoothly after speech stops
+  -> apply procedural Eye_Blink_L/R on all face meshes (portraitBlink.ts)
 ```
 
-Examples of CC4 morph targets include:
+Examples of CC4 morph targets used for speech:
 
 ```txt
 Jaw_Open
@@ -171,9 +172,35 @@ V_Open
 Mouth_Smile_L
 Mouth_Frown_R
 Mouth_Pucker_Up_L
-Eye_Blink_R
-Brow_Drop_L
 ```
+
+**Mouth-only mapping.** Brow, squint, cheek-raise, and nose-sneer ARKit channels are intentionally *not* mapped. Convai's streamed blendshapes carry noisy upper-face energy during TTS; mapping those channels made brows twitch and morph values stick between frames. `resetPortraitNeutralMorphs()` zeroes those morphs on the body mesh every lipsync tick.
+
+**Blinking is procedural, not ARKit-driven.** `Eye_Blink_L/R` were removed from the ARKit table so Convai does not fight the local blink cycle. `applyPortraitBlink()` drives blink morphs on every mesh that exposes them (body, lashes, eye occlusion) with a single timed close/open curve. Blinking starts only after the portrait is framed (`onReady`), not while the GLB loads behind the overlay.
+
+**Teeth tuning.** Teeth morphs are attenuated and capped; jaw-driven teeth mesh motion uses a lower scale so the smile line does not over-expose teeth during speech.
+
+## Portrait Rendering and Idle
+
+The in-game coach card renders the avatar through `PortraitScene` (`src/PortraitScene.tsx`):
+
+- Soft hemisphere + three directional lights, `apartment` HDR environment, ACES filmic tone mapping (exposure ~0.94)
+- Optional `EffectComposer` bloom/vignette on desktop (disabled on coarse/mobile pointers to save GPU)
+- `CoachCard` adapts canvas `dpr` (2×–3×) from the portrait window size via `ResizeObserver`
+
+Idle GLB clips include head and eye bone rotation that made the coach glance around the room. `sanitizePortraitIdleClip()` (`src/sanitizeIdleClip.ts`) prepares clips for the bust portrait:
+
+- Lock `CC_Base_Head` rotation to frame 0
+- Lock eye bone rotation/quaternion to frame 0 (pupils are morph-driven on `CC_Base_EyeOcclusion`, not eye-bone `lookAt`)
+- Strip drifting eye translation tracks; lock `CC_Base_BoneRoot` X/Z travel
+
+Visible pupils and eye whites stay on CC4 eye meshes parented to the export root; gaze stability comes from freezing head/eye bones, not from rotating eye bones toward the camera.
+
+## Menu Coach Headshots
+
+The menu coach picker shows circular PNG headshots (`public/coach-portraits/`). Each builtin coach defines `portraitFile` and `portraitFocusY` in `coachConfig.ts`.
+
+Full sources are 1000–2600 px wide — too large to downscale in the browser every paint. `npm run portraits:thumbs` generates 192×192 `*-thumb.png` files with Lanczos resampling and the same cover-crop math as the CSS `object-fit: cover` + `object-position`. The picker loads thumbs via `getCoachPortraitThumbUrl()`.
 
 ## Recovering CC4 Morph Target Names
 

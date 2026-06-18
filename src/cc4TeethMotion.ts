@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 
-const TEETH_MOTION_SCALE = 0.018;
+const TEETH_MOTION_SCALE = 0.011;
+const TEETH_JAW_DRIVE = 0.62;
 
 function getRestY(mesh: THREE.Object3D): number {
   if (typeof mesh.userData.cc4TeethRestY !== 'number') {
@@ -15,7 +16,7 @@ function getDirection(meshName: string): number {
 }
 
 export function applyCC4TeethMotion(root: THREE.Object3D, jawOpen: number): void {
-  const offset = THREE.MathUtils.clamp(jawOpen, 0, 1) * TEETH_MOTION_SCALE;
+  const offset = THREE.MathUtils.clamp(jawOpen * TEETH_JAW_DRIVE, 0, 1) * TEETH_MOTION_SCALE;
   root.traverse((child) => {
     const mesh = child as THREE.SkinnedMesh;
     if (!mesh.isSkinnedMesh || !/teeth/i.test(mesh.name)) return;

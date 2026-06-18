@@ -416,9 +416,7 @@ body:has(.auth-control) .topbar {
   width: 100%;
   height: 370px;
   flex: 0 0 370px;
-  background:
-    radial-gradient(circle at 50% 18%, rgba(247, 250, 255, 0.92), transparent 44%),
-    linear-gradient(180deg, #d4dce8 0%, #c6d1df 100%) !important;
+  background: linear-gradient(180deg, #d4dce8 0%, #c6d1df 100%) !important;
   border-bottom: 1px solid rgba(25, 23, 19, 0.22);
 }
 
@@ -573,6 +571,25 @@ body:has(.auth-control) .topbar {
 .coach-chat-btn.is-open {
   background: rgba(244, 234, 216, 0.18);
   border-color: rgba(244, 234, 216, 0.35);
+}
+
+.coach-mic-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  padding: 0;
+  margin: 0;
+  border-radius: 999px;
+  font-size: 0.95rem;
+  line-height: 1;
+}
+
+.coach-mic-btn.mic-on {
+  border-color: rgba(216, 167, 79, 0.55);
+  background: rgba(216, 167, 79, 0.16);
+  color: var(--cream);
 }
 
 .portrait-glow {
@@ -761,6 +778,24 @@ h2 {
   padding: 1rem;
   min-height: 0;
   overflow: hidden;
+}
+
+.turn-card {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.turn-card-body {
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+}
+
+.turn-card-body.is-scrollable {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
 }
 
 .primary-action {
@@ -1202,12 +1237,50 @@ h2 {
   text-align: left;
 }
 
-.coach-picker button,
+.coach-picker button {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  column-gap: 0.65rem;
+}
+
 .difficulty-picker button {
   display: grid;
   grid-template-columns: max-content 1fr;
   align-items: baseline;
   column-gap: 0.38rem;
+}
+
+.coach-picker-label {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  align-items: baseline;
+  column-gap: 0.38rem;
+  min-width: 0;
+}
+
+.coach-picker-avatar-wrap {
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  overflow: hidden;
+  flex-shrink: 0;
+  border: 1px solid rgba(244, 234, 216, 0.18);
+  background: #f4efe6;
+  isolation: isolate;
+  contain: paint;
+}
+
+.coach-picker-avatar {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: cover;
+  object-position: center 14%;
+  transform: scale(1.06);
+  transform-origin: center center;
+  -webkit-backface-visibility: hidden;
+  backface-visibility: hidden;
 }
 
 .mode-tile {
@@ -3049,9 +3122,7 @@ body {
   align-content: center;
   gap: 0.55rem;
   padding: 1rem;
-  background:
-    radial-gradient(circle at 50% 18%, rgba(247, 250, 255, 0.9), transparent 44%),
-    linear-gradient(180deg, rgba(212, 220, 232, 0.96), rgba(198, 209, 223, 0.96));
+  background: linear-gradient(180deg, rgba(212, 220, 232, 0.96), rgba(198, 209, 223, 0.96));
   color: #1f1b16;
   font-family: "Trebuchet MS", sans-serif;
   text-align: center;
@@ -3520,9 +3591,15 @@ body {
     max-height: clamp(132px, 22vh, 200px);
     overflow: hidden;
     width: 100%;
+    min-height: 0;
   }
 
   .side-panel .panel-card {
+    min-height: 0;
+  }
+
+  .side-panel .turn-card-body.is-scrollable,
+  .side-panel .panel-card.move-card {
     overflow-y: auto;
   }
 
@@ -4009,14 +4086,6 @@ body {
     max-width: 6.5rem;
     overflow: hidden;
     text-overflow: ellipsis;
-  }
-
-  .topbar-actions .mic-button {
-    width: 36px;
-    height: 36px;
-    padding: 0;
-    display: grid;
-    place-items: center;
   }
 
   .topbar-actions .debug-copy-button {

@@ -1,4 +1,5 @@
 import type { CoachConfig } from './coachConfig';
+import { DEFAULT_PORTRAIT_FILE } from './coachConfig';
 
 const STORAGE_KEY = 'classic-chess.customCoaches.v1';
 
@@ -34,6 +35,8 @@ export function storedCoachToConfig(stored: StoredCustomCoach): CoachConfig {
     name: stored.name,
     title: 'Custom Coach',
     assetName: 'Danielle',
+    portraitFile: DEFAULT_PORTRAIT_FILE,
+    portraitFocusY: 13,
     modelFile: 'leila.glb',
     idleFile: 'leila-animations.glb',
     characterId: stored.characterId,
