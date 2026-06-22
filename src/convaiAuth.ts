@@ -15,6 +15,14 @@ export type ConvaiAuthSession = {
 const DEFAULT_LOGIN_URL = 'https://login.convai.com';
 const DEFAULT_AUTH_ME_URL = 'https://convai.com/api/auth/me';
 const DEFAULT_AUTH_LOGOUT_URL = 'https://convai.com/api/auth/logout';
+const CONVAI_AUTH_PENDING_KEY = 'classic-chess.convaiAuthPending.v1';
+
+/** Always offered in the sign-in modal unless explicitly disabled. */
+export function isConvaiAuthOffered(): boolean {
+  const forced = import.meta.env.VITE_CONVAI_AUTH_ENABLED?.trim().toLowerCase();
+  if (forced === 'false') return false;
+  return true;
+}
 
 export function getConvaiLoginUrl(): string {
   return import.meta.env.VITE_CONVAI_LOGIN_URL?.trim() || DEFAULT_LOGIN_URL;
@@ -34,7 +42,10 @@ export function isConvaiAuthConfigured(): boolean {
   if (forced === 'true') return true;
   if (forced === 'false') return false;
   if (import.meta.env.VITE_CONVAI_AUTH_ME_URL?.trim()) return true;
-  if (typeof window !== 'undefined' && window.location.hostname.endsWith('.convai.com')) return true;
+  if (typeof window !== 'undefined') {
+    const host = window.location.hostname.toLowerCase();
+    if (host === 'convai.com' || host.endsWith('.convai.com')) return true;
+  }
   return false;
 }
 
@@ -46,6 +57,26 @@ export function buildConvaiLoginRedirectUrl(returnUrl?: string): string {
 
 export function signInWithConvaiRedirect(returnUrl?: string): void {
   window.location.href = buildConvaiLoginRedirectUrl(returnUrl);
+}
+
+export function markConvaiAuthPending(): void {
+  try {
+    window.sessionStorage.setItem(CONVAI_AUTH_PENDING_KEY, '1');
+  } catch {}
+}
+
+export function isConvaiAuthPending(): boolean {
+  try {
+    return window.sessionStorage.getItem(CONVAI_AUTH_PENDING_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+export function clearConvaiAuthPending(): void {
+  try {
+    window.sessionStorage.removeItem(CONVAI_AUTH_PENDING_KEY);
+  } catch {}
 }
 
 export async function fetchConvaiAuthSession(): Promise<ConvaiAuthSession | null> {

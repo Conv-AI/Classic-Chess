@@ -2,25 +2,42 @@ import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import {
   applyConvaiSessionApiKey,
   buildConvaiLoginRedirectUrl,
+  clearConvaiAuthPending,
   convaiSessionToAuthUser,
   fetchConvaiAuthSession,
   getConvaiAuthMeUrl,
   isConvaiAuthConfigured,
+  isConvaiAuthOffered,
+  isConvaiAuthPending,
+  markConvaiAuthPending,
 } from './convaiAuth';
 
-function stubLocalStorage() {
-  const store = new Map<string, string>();
+function stubBrowserStorage() {
+  const localStore = new Map<string, string>();
+  const sessionStore = new Map<string, string>();
   const localStorage = {
-    getItem: (key: string) => store.get(key) ?? null,
-    setItem: (key: string, value: string) => { store.set(key, value); },
-    removeItem: (key: string) => { store.delete(key); },
-    clear: () => { store.clear(); },
+    getItem: (key: string) => localStore.get(key) ?? null,
+    setItem: (key: string, value: string) => { localStore.set(key, value); },
+    removeItem: (key: string) => { localStore.delete(key); },
+    clear: () => { localStore.clear(); },
+  };
+  const sessionStorage = {
+    getItem: (key: string) => sessionStore.get(key) ?? null,
+    setItem: (key: string, value: string) => { sessionStore.set(key, value); },
+    removeItem: (key: string) => { sessionStore.delete(key); },
+    clear: () => { sessionStore.clear(); },
   };
   vi.stubGlobal('window', {
     localStorage,
+    sessionStorage,
     location: { href: 'https://chess.convai.com/', hostname: 'chess.convai.com' },
   });
-  return store;
+  return { localStore, sessionStore };
+}
+
+function stubLocalStorage() {
+  const { localStore } = stubBrowserStorage();
+  return localStore;
 }
 
 describe('convaiAuth', () => {
@@ -86,5 +103,30 @@ describe('convaiAuth', () => {
       credentials: 'include',
       cache: 'no-store',
     });
+  });
+
+  it('tracks pending Convai redirect state in sessionStorage', () => {
+    stubBrowserStorage();
+    expect(isConvaiAuthPending()).toBe(false);
+    markConvaiAuthPending();
+    expect(isConvaiAuthPending()).toBe(true);
+    clearConvaiAuthPending();
+    expect(isConvaiAuthPending()).toBe(false);
+  });
+
+  it('offers Convai sign-in by default', () => {
+    expect(isConvaiAuthOffered()).toBe(true);
+  });
+
+  it('can disable Convai sign-in via env flag', () => {
+    vi.stubEnv('VITE_CONVAI_AUTH_ENABLED', 'false');
+    expect(isConvaiAuthOffered()).toBe(false);
+    vi.unstubAllEnvs();
+  });
+
+  it('offers Convai auth on convai.com subdomains', () => {
+    vi.stubGlobal('window', { location: { hostname: 'chess.convai.com' } });
+    expect(isConvaiAuthOffered()).toBe(true);
+    expect(isConvaiAuthConfigured()).toBe(true);
   });
 });
