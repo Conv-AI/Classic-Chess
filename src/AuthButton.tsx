@@ -156,7 +156,7 @@ export default function AuthButton({ user, onUserChange, onApiKeyApplied }: Prop
         window.google.accounts.id.renderButton(googleButtonRef.current, {
           type: 'standard',
           theme: 'outline',
-          size: 'large',
+          size: convaiAuthEnabled ? 'medium' : 'large',
           shape: 'pill',
           text: 'signin_with',
         });
@@ -164,7 +164,7 @@ export default function AuthButton({ user, onUserChange, onApiKeyApplied }: Prop
       })
       .catch((err) => setStatus(err instanceof Error ? err.message : 'Google sign-in failed.'));
     return () => { cancelled = true; };
-  }, [googleClientId, onUserChange, user]);
+  }, [convaiAuthEnabled, googleClientId, onUserChange, user]);
 
   async function handleSignOut() {
     unlockUiAudio();

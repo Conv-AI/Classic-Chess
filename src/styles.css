@@ -114,6 +114,9 @@ body:has(.auth-control) .topbar {
   width: 6.8rem;
   max-width: calc(100vw - 1.5rem);
   min-height: 42px;
+  overflow: hidden;
+  isolation: isolate;
+  z-index: 1;
 }
 
 .auth-login-options {
@@ -121,11 +124,6 @@ body:has(.auth-control) .topbar {
   flex-direction: column;
   align-items: flex-end;
   gap: 0.45rem;
-}
-
-.auth-convai-button {
-  pointer-events: auto;
-  cursor: pointer;
 }
 
 .auth-convai-mark {
@@ -174,6 +172,13 @@ body:has(.auth-control) .topbar {
   gap: 0.48rem;
   padding: 0.34rem 0.68rem 0.34rem 0.44rem;
   pointer-events: none;
+}
+
+.auth-login-button.auth-convai-button {
+  position: relative;
+  z-index: 2;
+  pointer-events: auto;
+  cursor: pointer;
 }
 
 .auth-login-button strong,
