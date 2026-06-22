@@ -252,5 +252,8 @@ export default defineConfig(({ mode }) => {
       __DATASET_TOOLS_ENABLED__: JSON.stringify(datasetToolsEnabled),
     },
     plugins: [react(), logServerPlugin(datasetToolsEnabled, googleClientId)],
+    test: {
+      exclude: ['**/node_modules/**', '**/dist/**', 'misc/**'],
+    },
   };
 });

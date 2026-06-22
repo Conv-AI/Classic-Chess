@@ -234,6 +234,13 @@ function App() {
   const handleAuthUserChange = useCallback((user: AuthUser | null) => {
     setAuthUser(user);
     chessConvai.syncEndUserIdentity(authUserToIdentity(user));
+    if (user?.provider === 'convai' && hasConvaiApiKey()) {
+      setApiKeyModalOpen(false);
+    }
+  }, []);
+  const handleApiKeyApplied = useCallback(() => {
+    setApiKeyVersion((value) => value + 1);
+    if (hasConvaiApiKey()) setApiKeyModalOpen(false);
   }, []);
 
   useEffect(() => {
@@ -475,7 +482,7 @@ function App() {
         onCreator={() => setScreen('creator')}
         onDataset={DATASET_TOOLS_ENABLED ? () => setScreen('dataset') : undefined}
         onManageApiKey={() => setApiKeyModalOpen(true)}
-        authSlot={<AuthButton user={authUser} onUserChange={handleAuthUserChange} />}
+        authSlot={<AuthButton user={authUser} onUserChange={handleAuthUserChange} onApiKeyApplied={handleApiKeyApplied} />}
       />
     );
   }

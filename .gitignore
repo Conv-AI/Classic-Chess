@@ -23,10 +23,12 @@ Thumbs.db
 .vscode/
 .idea/
 
-demo/
+# Local reference repos (not part of the app)
+misc/
 docs/prompts.txt
 docs/AGENT_HANDOFF.md
 docs/convai-demo-tutorial-script.md
+demo/
 # Local dataset captured via `npm run dev:dataset`
 dataset.json
 Logs

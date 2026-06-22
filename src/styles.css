@@ -116,6 +116,45 @@ body:has(.auth-control) .topbar {
   min-height: 42px;
 }
 
+.auth-login-options {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.45rem;
+}
+
+.auth-convai-button {
+  pointer-events: auto;
+  cursor: pointer;
+}
+
+.auth-convai-mark {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  flex: 0 0 28px;
+  border-radius: 999px;
+  background: linear-gradient(135deg, #5b8cff, #7c5cff);
+  color: #f8fbff;
+  font-family: "Trebuchet MS", sans-serif;
+  font-size: 0.82rem;
+  font-weight: 900;
+}
+
+.auth-provider-tag {
+  display: inline-flex;
+  align-self: flex-start;
+  padding: 0.12rem 0.45rem;
+  border-radius: 999px;
+  background: rgba(91, 140, 255, 0.16);
+  color: #b8ccff;
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
 .auth-login-button,
 .auth-avatar-button {
   display: inline-flex;
@@ -297,6 +336,10 @@ body:has(.auth-control) .topbar {
 
 .menu-auth-slot .tooltip-trigger {
   display: inline-flex;
+}
+
+.menu-auth-slot .auth-login-options {
+  gap: 0.35rem;
 }
 
 .menu-auth-slot .auth-login-shell {

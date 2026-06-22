@@ -4,9 +4,16 @@ import {
   fetchAuthUser,
   getGoogleClientId,
   signInWithGoogleCredential,
-  signOutGoogle,
+  signOutAuth,
   type AuthUser,
 } from './auth';
+import {
+  applyConvaiSessionApiKey,
+  convaiSessionToAuthUser,
+  fetchConvaiAuthSession,
+  isConvaiAuthConfigured,
+  signInWithConvaiRedirect,
+} from './convaiAuth';
 import Tooltip from './Tooltip';
 import { playUiSound, unlockUiAudio } from './uiSounds';
 
@@ -41,6 +48,7 @@ declare global {
 type Props = {
   user: AuthUser | null;
   onUserChange: (user: AuthUser | null) => void;
+  onApiKeyApplied?: () => void;
 };
 
 let googleScriptPromise: Promise<void> | null = null;
@@ -67,38 +75,60 @@ function loadGoogleScript(): Promise<void> {
   return googleScriptPromise;
 }
 
-export default function AuthButton({ user, onUserChange }: Props) {
+async function restoreConvaiSession(
+  onUserChange: (user: AuthUser | null) => void,
+  onApiKeyApplied?: () => void,
+): Promise<AuthUser | null> {
+  const session = await fetchConvaiAuthSession();
+  if (!session) return null;
+  const nextUser = convaiSessionToAuthUser(session);
+  if (applyConvaiSessionApiKey(session)) onApiKeyApplied?.();
+  onUserChange(nextUser);
+  return nextUser;
+}
+
+export default function AuthButton({ user, onUserChange, onApiKeyApplied }: Props) {
   const googleClientId = getGoogleClientId();
-  const buttonRef = useRef<HTMLDivElement | null>(null);
-  const renderedRef = useRef(false);
+  const convaiAuthEnabled = isConvaiAuthConfigured();
+  const googleButtonRef = useRef<HTMLDivElement | null>(null);
+  const googleRenderedRef = useRef(false);
   const [open, setOpen] = useState(false);
   const [status, setStatus] = useState('');
 
   useEffect(() => {
     let cancelled = false;
-    void fetchAuthUser()
-      .then((nextUser) => {
-        if (!cancelled) onUserChange(nextUser);
-      })
-      .catch(() => {
-        if (!cancelled) onUserChange(null);
-      });
+    void (async () => {
+      const cachedUser = await fetchAuthUser();
+      if (cancelled) return;
+      if (cachedUser) {
+        onUserChange(cachedUser);
+        return;
+      }
+      if (!convaiAuthEnabled) {
+        onUserChange(null);
+        return;
+      }
+      const convaiUser = await restoreConvaiSession(onUserChange, onApiKeyApplied);
+      if (!cancelled && !convaiUser) onUserChange(null);
+    })().catch(() => {
+      if (!cancelled) onUserChange(null);
+    });
     return () => { cancelled = true; };
-  }, [onUserChange]);
+  }, [convaiAuthEnabled, onApiKeyApplied, onUserChange]);
 
   useEffect(() => {
-    if (user && buttonRef.current) {
-      buttonRef.current.innerHTML = '';
-      renderedRef.current = false;
+    if (user && googleButtonRef.current) {
+      googleButtonRef.current.innerHTML = '';
+      googleRenderedRef.current = false;
     }
   }, [user]);
 
   useEffect(() => {
-    if (!googleClientId || user || renderedRef.current) return;
+    if (!googleClientId || user || googleRenderedRef.current) return;
     let cancelled = false;
     void loadGoogleScript()
       .then(() => {
-        if (cancelled || !buttonRef.current || !window.google?.accounts?.id) return;
+        if (cancelled || !googleButtonRef.current || !window.google?.accounts?.id) return;
         if (!googleIdentityInitialized) {
           window.google.accounts.id.initialize({
             client_id: googleClientId,
@@ -123,14 +153,14 @@ export default function AuthButton({ user, onUserChange }: Props) {
           });
           googleIdentityInitialized = true;
         }
-        window.google.accounts.id.renderButton(buttonRef.current, {
+        window.google.accounts.id.renderButton(googleButtonRef.current, {
           type: 'standard',
           theme: 'outline',
           size: 'large',
           shape: 'pill',
           text: 'signin_with',
         });
-        renderedRef.current = true;
+        googleRenderedRef.current = true;
       })
       .catch((err) => setStatus(err instanceof Error ? err.message : 'Google sign-in failed.'));
     return () => { cancelled = true; };
@@ -141,24 +171,34 @@ export default function AuthButton({ user, onUserChange }: Props) {
     playUiSound('tap');
     setStatus('Signing out...');
     try {
-      await signOutGoogle();
+      await signOutAuth(user);
       window.google?.accounts?.id?.disableAutoSelect();
       onUserChange(null);
+      onApiKeyApplied?.();
       setOpen(false);
       setStatus('');
-      renderedRef.current = false;
+      googleRenderedRef.current = false;
     } catch {
       setStatus('Could not sign out.');
     }
   }
 
-  if (!googleClientId && !user) return null;
+  function handleConvaiSignIn() {
+    unlockUiAudio();
+    playUiSound('tap');
+    setStatus('Redirecting to Convai...');
+    signInWithConvaiRedirect();
+  }
+
+  if (!googleClientId && !convaiAuthEnabled && !user) return null;
+
+  const providerLabel = user?.provider === 'convai' ? 'Convai account and API key' : 'Google account and Convai memory';
 
   return (
     <div className="auth-control">
       {user ? (
         <div className="auth-user-menu">
-          <Tooltip text="Google account and Convai memory" placement="bottom">
+          <Tooltip text={providerLabel} placement="bottom">
             <button
               type="button"
               className="auth-avatar-button"
@@ -176,6 +216,7 @@ export default function AuthButton({ user, onUserChange }: Props) {
             <div className="auth-popover">
               <strong>{user.name || 'Signed in'}</strong>
               <span>{user.email}</span>
+              {user.provider === 'convai' && <span className="auth-provider-tag">Convai</span>}
               <button type="button" onClick={() => void handleSignOut()}>
                 <LogOut size={15} aria-hidden="true" />
                 Sign out
@@ -184,14 +225,26 @@ export default function AuthButton({ user, onUserChange }: Props) {
           )}
         </div>
       ) : (
-        <div className="auth-login-shell">
-          <button type="button" className="auth-login-button" tabIndex={-1} aria-hidden="true">
-            <span className="auth-google-mark">G</span>
-            <span className="auth-login-copy">
-              <strong>Sign in</strong>
-            </span>
-          </button>
-          <div className="google-signin-hitbox" ref={buttonRef} />
+        <div className="auth-login-options">
+          {googleClientId && (
+            <div className="auth-login-shell">
+              <button type="button" className="auth-login-button" tabIndex={-1} aria-hidden="true">
+                <span className="auth-google-mark">G</span>
+                <span className="auth-login-copy">
+                  <strong>Google</strong>
+                </span>
+              </button>
+              <div className="google-signin-hitbox" ref={googleButtonRef} />
+            </div>
+          )}
+          {convaiAuthEnabled && (
+            <button type="button" className="auth-login-button auth-convai-button" onClick={handleConvaiSignIn}>
+              <span className="auth-convai-mark" aria-hidden="true">C</span>
+              <span className="auth-login-copy">
+                <strong>Convai</strong>
+              </span>
+            </button>
+          )}
         </div>
       )}
       {status && <div className="auth-status">{status}</div>}

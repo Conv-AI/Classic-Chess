@@ -37,6 +37,7 @@ describe('authUserToIdentity', () => {
       name: 'Akshi',
       email: 'akshi@example.com',
       picture: 'https://example.com/avatar.png',
+      provider: 'google',
     });
 
     expect(identity).toEqual({
@@ -56,6 +57,7 @@ describe('authUserToIdentity', () => {
       id: 'sub-456',
       name: '   ',
       email: 'student@example.com',
+      provider: 'google',
     });
 
     expect(identity?.displayName).toBe('student@example.com');
@@ -92,11 +94,13 @@ describe('authUserToIdentity', () => {
       id: 'sub-456',
       name: 'Student',
       email: 'student@example.com',
+      provider: 'google',
     }))).toBe(true);
     expect(resolveConvaiConnectionEndUserId(authUserToIdentity({
       id: 'sub-456',
       name: 'Student',
       email: 'student@example.com',
+      provider: 'google',
     }))).toBe('google:sub-456');
   });
 
@@ -113,7 +117,20 @@ describe('authUserToIdentity', () => {
       name: 'Static User',
       email: 'static@example.com',
       picture: 'https://example.com/static.png',
+      provider: 'google',
     });
     expect(authUserToIdentity(user)?.endUserId).toBe('google:static-sub-789');
+  });
+
+  it('maps a Convai account to a stable Convai end user id', () => {
+    const identity = authUserToIdentity({
+      id: 'player@convai.com',
+      name: 'Convai Player',
+      email: 'player@convai.com',
+      provider: 'convai',
+    });
+
+    expect(identity?.endUserId).toBe('convai:player@convai.com');
+    expect(identity?.endUserMetadata.provider).toBe('convai');
   });
 });

@@ -1,8 +1,14 @@
+import { signOutConvai } from './convaiAuth';
+import { setStoredConvaiApiKey } from './convaiApiKey';
+
+export type AuthProvider = 'google' | 'convai';
+
 export type AuthUser = {
   id: string;
   name: string;
   email: string;
   picture?: string;
+  provider: AuthProvider;
 };
 
 export type UserIdentity = {
@@ -11,7 +17,8 @@ export type UserIdentity = {
   endUserMetadata: Record<string, unknown>;
 };
 
-const STATIC_AUTH_STORAGE_KEY = 'classic-chess.googleUser.v1';
+const STATIC_AUTH_STORAGE_KEY = 'classic-chess.authUser.v1';
+const LEGACY_GOOGLE_AUTH_STORAGE_KEY = 'classic-chess.googleUser.v1';
 const GUEST_END_USER_ID_KEY = 'classic-chess.guestEndUserId.v1';
 const KNOWN_END_USER_IDS_KEY = 'classic-chess.knownEndUserIds.v1';
 const MAX_KNOWN_END_USER_IDS = 64;
@@ -87,12 +94,12 @@ export function authUserToIdentity(user: AuthUser | null): UserIdentity | null {
   const displayName = user.name.trim() || user.email.trim() || 'Student';
   return {
     displayName,
-    endUserId: `google:${user.id}`,
+    endUserId: `${user.provider}:${user.id}`,
     endUserMetadata: {
       name: displayName,
       email: user.email,
       picture: user.picture,
-      provider: 'google',
+      provider: user.provider,
     },
   };
 }
@@ -154,7 +161,17 @@ export function authUserFromGoogleCredential(credential: string): AuthUser {
   const name = typeof payload.name === 'string' ? payload.name : email;
   const picture = typeof payload.picture === 'string' ? payload.picture : undefined;
   if (!id) throw new Error('Google credential is missing a stable subject.');
-  return { id, name: name || email || 'Student', email, picture };
+  return { id, name: name || email || 'Student', email, picture, provider: 'google' };
+}
+
+export async function signOutAuth(user: AuthUser | null): Promise<void> {
+  clearStoredStaticAuthUser();
+  if (user?.provider === 'convai') {
+    await signOutConvai();
+    setStoredConvaiApiKey('');
+    return;
+  }
+  await signOutGoogle();
 }
 
 function decodeJwtPayload(token: string): Record<string, unknown> {
@@ -168,12 +185,30 @@ function decodeJwtPayload(token: string): Record<string, unknown> {
   return JSON.parse(json);
 }
 
+function normalizeStoredAuthUser(parsed: unknown): AuthUser | null {
+  if (!parsed || typeof parsed !== 'object') return null;
+  const record = parsed as Record<string, unknown>;
+  if (typeof record.id !== 'string' || !record.id.trim()) return null;
+  const provider = record.provider === 'convai' ? 'convai' : 'google';
+  return {
+    id: record.id,
+    name: typeof record.name === 'string' ? record.name : '',
+    email: typeof record.email === 'string' ? record.email : '',
+    picture: typeof record.picture === 'string' ? record.picture : undefined,
+    provider,
+  };
+}
+
 function getStoredStaticAuthUser(): AuthUser | null {
   try {
     const raw = window.localStorage.getItem(STATIC_AUTH_STORAGE_KEY);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw);
-    return parsed?.id ? parsed : null;
+    if (raw) {
+      const parsed = normalizeStoredAuthUser(JSON.parse(raw));
+      if (parsed) return parsed;
+    }
+    const legacyRaw = window.localStorage.getItem(LEGACY_GOOGLE_AUTH_STORAGE_KEY);
+    if (!legacyRaw) return null;
+    return normalizeStoredAuthUser(JSON.parse(legacyRaw));
   } catch {
     return null;
   }
