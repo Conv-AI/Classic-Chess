@@ -8,7 +8,6 @@ import {
   signInWithConvaiRedirect,
 } from './convaiAuth';
 import {
-  clickGoogleSignInButton,
   initializeGoogleSignIn,
   loadGoogleScript,
   renderGoogleSignInButton,
@@ -108,7 +107,7 @@ export default function AuthSignInModal({ open, onClose, onUserChange, startInSu
               setStatus(err instanceof Error ? err.message : 'Google sign-in failed.');
             });
         });
-        renderGoogleSignInButton(googleButtonRef.current, { type: 'icon', size: 'medium' });
+        renderGoogleSignInButton(googleButtonRef.current, { type: 'standard', size: 'large', width: 400 });
         googleRenderedRef.current = true;
         setGoogleReady(true);
       })
@@ -123,13 +122,6 @@ export default function AuthSignInModal({ open, onClose, onUserChange, startInSu
 
   function handleBackdropClick(event: MouseEvent<HTMLDivElement>) {
     if (event.target === event.currentTarget && phase !== 'signing-in') handleClose();
-  }
-
-  function handleGoogleSignIn() {
-    if (!googleReady) return;
-    unlockUiAudio();
-    playUiSound('nav');
-    clickGoogleSignInButton(googleButtonRef.current);
   }
 
   function handleConvaiSignIn() {
@@ -202,18 +194,21 @@ export default function AuthSignInModal({ open, onClose, onUserChange, startInSu
 
             <div className="auth-provider-list">
               {googleClientId && (
-                <button
-                  type="button"
-                  className="auth-provider-button auth-provider-button-google"
-                  onClick={handleGoogleSignIn}
-                  disabled={!googleReady}
+                <div
+                  className={`auth-provider-button auth-provider-button-google${googleReady ? '' : ' is-loading'}`}
+                  aria-busy={!googleReady}
                 >
                   <span className="auth-provider-icon auth-provider-icon-google" aria-hidden="true">G</span>
-                  <span className="auth-provider-label">
+                  <span className="auth-provider-label" aria-hidden="true">
                     <strong>Sign in with Google</strong>
                     <small>Sync coaching memory with your Google account</small>
                   </span>
-                </button>
+                  <div
+                    className="auth-provider-google-overlay"
+                    ref={googleButtonRef}
+                    aria-label="Sign in with Google"
+                  />
+                </div>
               )}
               {convaiOffered && (
                 <button type="button" className="auth-provider-button auth-provider-button-convai" onClick={handleConvaiSignIn}>
@@ -241,9 +236,6 @@ export default function AuthSignInModal({ open, onClose, onUserChange, startInSu
               </div>
             )}
 
-            {googleClientId && (
-              <div className="auth-provider-google-hidden" ref={googleButtonRef} aria-hidden="true" />
-            )}
           </>
         )}
       </div>

@@ -1949,15 +1949,41 @@ h2 {
   gap: 0.7rem;
 }
 
-.auth-provider-google-hidden {
+.auth-provider-button-google {
+  position: relative;
+  cursor: pointer;
+}
+
+.auth-provider-button-google.is-loading {
+  opacity: 0.55;
+  cursor: wait;
+}
+
+.auth-provider-google-overlay {
   position: absolute;
-  width: 1px;
-  height: 1px;
+  inset: 0;
+  z-index: 2;
+  display: flex;
+  align-items: stretch;
+  justify-content: stretch;
+  opacity: 0.001;
   overflow: hidden;
-  clip: rect(0 0 0 0);
-  white-space: nowrap;
-  opacity: 0;
+  border-radius: inherit;
+}
+
+.auth-provider-button-google.is-loading .auth-provider-google-overlay {
   pointer-events: none;
+}
+
+.auth-provider-google-overlay > div {
+  width: 100% !important;
+  height: 100% !important;
+}
+
+.auth-provider-google-overlay iframe {
+  width: 100% !important;
+  min-height: 100% !important;
+  margin: 0 !important;
 }
 
 .auth-provider-button {

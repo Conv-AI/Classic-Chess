@@ -48,16 +48,18 @@ export function renderGoogleSignInButton(
     type?: 'standard' | 'icon';
     size?: 'small' | 'medium' | 'large';
     text?: 'signin_with' | 'signup_with' | 'continue_with' | 'signin';
+    width?: number;
   },
 ): void {
   if (!window.google?.accounts?.id) return;
   parent.innerHTML = '';
   window.google.accounts.id.renderButton(parent, {
-    type: options?.type ?? 'icon',
+    type: options?.type ?? 'standard',
     theme: 'outline',
-    size: options?.size ?? 'medium',
-    shape: 'circle',
+    size: options?.size ?? 'large',
+    shape: 'rectangular',
     text: options?.text ?? 'signin_with',
+    width: options?.width,
   });
 }
 
@@ -96,6 +98,7 @@ declare global {
               size?: 'small' | 'medium' | 'large';
               shape?: 'rectangular' | 'pill' | 'circle' | 'square';
               text?: 'signin_with' | 'signup_with' | 'continue_with' | 'signin';
+              width?: number;
             },
           ): void;
           disableAutoSelect(): void;
