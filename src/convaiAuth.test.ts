@@ -83,6 +83,10 @@ describe('convaiAuth', () => {
     expect(storage.get('classic-chess.convaiApiKey.v1')).toBe('convai-test-key');
   });
 
+  it('uses auth.convai.com session endpoints by default', () => {
+    expect(getConvaiAuthMeUrl()).toBe('https://auth.convai.com/api/auth/me');
+  });
+
   it('fetches the Convai auth session with credentials included', async () => {
     vi.stubGlobal('window', { location: { hostname: 'chess.convai.com' } });
     const fetchMock = vi.mocked(fetch).mockResolvedValue({

@@ -12,6 +12,7 @@ import {
   clearConvaiAuthPending,
   convaiSessionToAuthUser,
   fetchConvaiAuthSession,
+  isConvaiAuthConfigured,
   isConvaiAuthOffered,
   isConvaiAuthPending,
 } from './convaiAuth';
@@ -38,14 +39,9 @@ export default function AuthButton({ user, onUserChange, onApiKeyApplied }: Prop
   useEffect(() => {
     let cancelled = false;
     void (async () => {
-      const cachedUser = await fetchAuthUser();
-      if (cancelled) return;
-      if (cachedUser) {
-        onUserChange(cachedUser);
-        return;
-      }
+      const returningFromConvai = isConvaiAuthPending();
 
-      if (isConvaiAuthPending() && isConvaiAuthOffered()) {
+      if (isConvaiAuthConfigured()) {
         const session = await fetchConvaiAuthSession();
         if (cancelled) return;
         if (session) {
@@ -53,11 +49,20 @@ export default function AuthButton({ user, onUserChange, onApiKeyApplied }: Prop
           if (applyConvaiSessionApiKey(session)) onApiKeyApplied?.();
           clearConvaiAuthPending();
           onUserChange(nextUser);
-          setConvaiSuccessUser(nextUser);
-          setSignInModalOpen(true);
+          if (returningFromConvai) {
+            setConvaiSuccessUser(nextUser);
+            setSignInModalOpen(true);
+          }
           return;
         }
         clearConvaiAuthPending();
+      }
+
+      const cachedUser = await fetchAuthUser();
+      if (cancelled) return;
+      if (cachedUser) {
+        onUserChange(cachedUser);
+        return;
       }
 
       if (!cancelled) onUserChange(null);

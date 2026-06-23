@@ -1221,6 +1221,8 @@ h2 {
   grid-template-columns: auto minmax(0, 1fr);
   align-items: center;
   column-gap: 0.65rem;
+  overflow: hidden;
+  min-width: 0;
 }
 
 .difficulty-picker button {
@@ -1231,11 +1233,30 @@ h2 {
 }
 
 .coach-picker-label {
-  display: grid;
-  grid-template-columns: max-content 1fr;
-  align-items: baseline;
-  column-gap: 0.38rem;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.1rem;
   min-width: 0;
+  overflow: hidden;
+}
+
+.coach-picker-label > span {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.coach-picker-label > small {
+  display: -webkit-box;
+  max-width: 100%;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .coach-picker-avatar-wrap {
@@ -1682,6 +1703,16 @@ h2 {
   padding: 0.75rem;
   background: rgba(0, 0, 0, 0.28);
   color: #c7f0df;
+}
+
+@media (max-width: 1180px) {
+  .setup-panel {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+
+  .coach-summary-stack {
+    grid-column: 1 / -1;
+  }
 }
 
 @media (max-width: 980px) {
@@ -3506,8 +3537,33 @@ body {
 .coach-summary-stack,
 .coach-summary,
 .coaching-control-card,
-.coaching-control-toggle {
+.coaching-control-toggle,
+.setup-panel-coach {
   min-width: 0;
+}
+
+.setup-panel-coach {
+  container-type: inline-size;
+  container-name: coach-panel;
+}
+
+@container coach-panel (max-width: 420px) {
+  .coach-picker {
+    grid-template-columns: 1fr;
+  }
+}
+
+@container coach-panel (max-width: 300px) {
+  .coach-picker button {
+    grid-template-columns: 1fr;
+    justify-items: center;
+    text-align: center;
+  }
+
+  .coach-picker-label {
+    align-items: center;
+    text-align: center;
+  }
 }
 
 @media (max-width: 420px) {

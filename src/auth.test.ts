@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   authUserFromGoogleCredential,
   authUserToIdentity,
+  fetchAuthUser,
   getKnownEndUserIds,
   getStableGuestEndUserId,
   registerKnownEndUserId,
@@ -132,5 +133,30 @@ describe('authUserToIdentity', () => {
 
     expect(identity?.endUserId).toBe('convai:player@convai.com');
     expect(identity?.endUserMetadata.provider).toBe('convai');
+  });
+
+  it('skips same-origin auth fetch on static convai deploys', async () => {
+    const store = stubLocalStorage();
+    store.set('classic-chess.authUser.v1', JSON.stringify({
+      id: 'google-sub',
+      name: 'Cached',
+      email: 'cached@example.com',
+      provider: 'google',
+    }));
+    vi.stubGlobal('window', {
+      localStorage: {
+        getItem: (key: string) => store.get(key) ?? null,
+        setItem: (key: string, value: string) => { store.set(key, value); },
+        removeItem: (key: string) => { store.delete(key); },
+        clear: () => { store.clear(); },
+      },
+      location: { hostname: 'chess.convai.com' },
+    });
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+
+    const user = await fetchAuthUser();
+    expect(user?.email).toBe('cached@example.com');
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });

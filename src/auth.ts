@@ -104,8 +104,15 @@ export function authUserToIdentity(user: AuthUser | null): UserIdentity | null {
   };
 }
 
+function shouldUseSameOriginGoogleAuth(): boolean {
+  if (typeof window === 'undefined') return false;
+  const host = window.location.hostname.toLowerCase();
+  return host === 'localhost' || host === '127.0.0.1';
+}
+
 export async function fetchAuthUser(): Promise<AuthUser | null> {
   const stored = getStoredStaticAuthUser();
+  if (!shouldUseSameOriginGoogleAuth()) return stored;
   try {
     const res = await fetch('/api/auth/me', { credentials: 'include' });
     if (res.status === 401 || res.status === 404) return stored;

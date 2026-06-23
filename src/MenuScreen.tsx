@@ -144,7 +144,7 @@ export default function MenuScreen({
         </div>
 
         <section className="setup-panel">
-          <div>
+          <div className="setup-panel-coach">
             <p className="eyebrow">Coach</p>
             <div className="coach-picker">
               {coaches.map((coach) => (

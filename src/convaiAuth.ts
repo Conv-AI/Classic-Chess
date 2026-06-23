@@ -13,8 +13,8 @@ export type ConvaiAuthSession = {
 };
 
 const DEFAULT_LOGIN_URL = 'https://login.convai.com';
-const DEFAULT_AUTH_ME_URL = 'https://convai.com/api/auth/me';
-const DEFAULT_AUTH_LOGOUT_URL = 'https://convai.com/api/auth/logout';
+const DEFAULT_AUTH_ME_URL = 'https://auth.convai.com/api/auth/me';
+const DEFAULT_AUTH_LOGOUT_URL = 'https://auth.convai.com/api/auth/logout';
 const CONVAI_AUTH_PENDING_KEY = 'classic-chess.convaiAuthPending.v1';
 
 /** Always offered in the sign-in modal unless explicitly disabled. */
