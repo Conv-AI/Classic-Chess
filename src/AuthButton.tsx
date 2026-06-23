@@ -26,6 +26,8 @@ type Props = {
   onApiKeyApplied?: () => void;
 };
 
+const CONVAI_SESSION_ERROR = 'Could not read your Convai session. Try signing in again.';
+
 export function isAuthOffered(): boolean {
   return Boolean(getGoogleClientId()) || isConvaiAuthOffered();
 }
@@ -34,7 +36,7 @@ export default function AuthButton({ user, onUserChange, onApiKeyApplied }: Prop
   const [popoverOpen, setPopoverOpen] = useState(false);
   const [signInModalOpen, setSignInModalOpen] = useState(false);
   const [convaiSuccessUser, setConvaiSuccessUser] = useState<AuthUser | null>(null);
-  const [convaiErrorMessage, setConvaiErrorMessage] = useState<string | null>(null);
+  const [convaiRestoreError, setConvaiRestoreError] = useState<string | null>(null);
   const [status, setStatus] = useState('');
 
   useEffect(() => {
@@ -52,21 +54,15 @@ export default function AuthButton({ user, onUserChange, onApiKeyApplied }: Prop
           onUserChange(nextUser);
           if (returningFromConvai) {
             setConvaiSuccessUser(nextUser);
-            setConvaiErrorMessage(null);
             setSignInModalOpen(true);
           }
           return;
         }
-        if (returningFromConvai) {
-          clearConvaiAuthPending();
-          setConvaiSuccessUser(null);
-          setConvaiErrorMessage(
-            'Could not read your Convai session. Make sure you are signed in at convai.com, then try again.',
-          );
-          setSignInModalOpen(true);
-          return;
-        }
         clearConvaiAuthPending();
+        if (returningFromConvai) {
+          setConvaiRestoreError(CONVAI_SESSION_ERROR);
+          setSignInModalOpen(true);
+        }
       }
 
       const cachedUser = await fetchAuthUser();
@@ -103,14 +99,14 @@ export default function AuthButton({ user, onUserChange, onApiKeyApplied }: Prop
     unlockUiAudio();
     playUiSound('tap');
     setConvaiSuccessUser(null);
-    setConvaiErrorMessage(null);
+    setConvaiRestoreError(null);
     setSignInModalOpen(true);
   }
 
   function closeSignInModal() {
     setSignInModalOpen(false);
     setConvaiSuccessUser(null);
-    setConvaiErrorMessage(null);
+    setConvaiRestoreError(null);
   }
 
   function handleSignedIn(nextUser: AuthUser) {
@@ -166,7 +162,7 @@ export default function AuthButton({ user, onUserChange, onApiKeyApplied }: Prop
         onClose={closeSignInModal}
         onUserChange={handleSignedIn}
         startInSuccess={convaiSuccessUser}
-        startInError={convaiErrorMessage}
+        startInError={convaiRestoreError}
       />
     </>
   );

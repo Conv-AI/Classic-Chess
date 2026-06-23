@@ -12,11 +12,24 @@ export type ConvaiAuthSession = {
   providers?: string[];
 };
 
+type DecryptedAuthPayload = {
+  apiKey?: string;
+  email?: string;
+  username?: string;
+  companyName?: string;
+  companyRole?: string;
+  providers?: string[];
+  photoURL?: string;
+  photoUrl?: string;
+  profilePicture?: string;
+};
+
 const DEFAULT_LOGIN_URL = 'https://login.convai.com';
-const DEFAULT_AUTH_ME_URL = 'https://auth.convai.com/api/auth/me';
-const DEFAULT_AUTH_LOGOUT_URL = 'https://auth.convai.com/api/auth/logout';
-const DEFAULT_LOGIN_RETURN_PARAM = 'redirect';
+const DEFAULT_DECRYPT_URL = 'https://login.convai.com/api/decrypt';
 const CONVAI_AUTH_PENDING_KEY = 'classic-chess.convaiAuthPending.v1';
+
+export const CONVAI_AUTH_COOKIE = 'CONVAI_AUTH';
+export const CONVAI_API_KEY_COOKIE = 'CONVAI_API_KEY';
 
 /** Always offered in the sign-in modal unless explicitly disabled. */
 export function isConvaiAuthOffered(): boolean {
@@ -29,20 +42,16 @@ export function getConvaiLoginUrl(): string {
   return import.meta.env.VITE_CONVAI_LOGIN_URL?.trim() || DEFAULT_LOGIN_URL;
 }
 
-export function getConvaiAuthMeUrl(): string {
-  return import.meta.env.VITE_CONVAI_AUTH_ME_URL?.trim() || DEFAULT_AUTH_ME_URL;
+export function getConvaiDecryptUrl(): string {
+  return import.meta.env.VITE_CONVAI_DECRYPT_URL?.trim() || DEFAULT_DECRYPT_URL;
 }
 
-export function getConvaiAuthLogoutUrl(): string {
-  return import.meta.env.VITE_CONVAI_AUTH_LOGOUT_URL?.trim() || DEFAULT_AUTH_LOGOUT_URL;
-}
-
-/** True on *.convai.com deploys, when explicitly enabled, or when auth URLs are overridden. */
+/** True on *.convai.com deploys, when explicitly enabled, or when decrypt URL is overridden. */
 export function isConvaiAuthConfigured(): boolean {
   const forced = import.meta.env.VITE_CONVAI_AUTH_ENABLED?.trim().toLowerCase();
   if (forced === 'true') return true;
   if (forced === 'false') return false;
-  if (import.meta.env.VITE_CONVAI_AUTH_ME_URL?.trim()) return true;
+  if (import.meta.env.VITE_CONVAI_DECRYPT_URL?.trim()) return true;
   if (typeof window !== 'undefined') {
     const host = window.location.hostname.toLowerCase();
     if (host === 'convai.com' || host.endsWith('.convai.com')) return true;
@@ -50,13 +59,102 @@ export function isConvaiAuthConfigured(): boolean {
   return false;
 }
 
-export function getConvaiLoginReturnParam(): string {
-  return import.meta.env.VITE_CONVAI_LOGIN_RETURN_PARAM?.trim() || DEFAULT_LOGIN_RETURN_PARAM;
+function safeDecodeURIComponent(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
+export function getConvaiCookie(name: string): string | null {
+  if (typeof document === 'undefined') return null;
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const match = document.cookie.match(new RegExp(`(?:^|;\\s*)${escaped}=([^;]*)`));
+  if (!match?.[1]) return null;
+  return safeDecodeURIComponent(match[1].trim());
+}
+
+export function parseDecryptedAuthPayload(jsonString: string): DecryptedAuthPayload {
+  if (!jsonString.trim()) return {};
+  try {
+    return JSON.parse(jsonString) as DecryptedAuthPayload;
+  } catch {
+    return {};
+  }
+}
+
+export async function decryptConvaiCookie(encrypted: string): Promise<string | null> {
+  const value = encrypted.trim();
+  if (!value) return null;
+
+  const url = getConvaiDecryptUrl();
+  try {
+    let response = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ data: value }),
+      cache: 'no-store',
+    });
+
+    if (response.status === 400) {
+      response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ encryptedString: value }),
+        cache: 'no-store',
+      });
+    }
+
+    if (!response.ok) return null;
+
+    const body = await response.json() as Record<string, unknown>;
+    const decrypted = body.decryptedString ?? body.data ?? body.decrypted;
+    return typeof decrypted === 'string' && decrypted.trim() ? decrypted : null;
+  } catch {
+    return null;
+  }
+}
+
+async function buildSessionFromCookies(): Promise<ConvaiAuthSession | null> {
+  const authCookie = getConvaiCookie(CONVAI_AUTH_COOKIE);
+  if (!authCookie) return null;
+
+  const decryptedAuth = await decryptConvaiCookie(authCookie);
+  if (!decryptedAuth) return null;
+
+  const payload = parseDecryptedAuthPayload(decryptedAuth);
+  let apiKey = payload.apiKey?.trim() ?? '';
+
+  if (!apiKey) {
+    const apiKeyCookie = getConvaiCookie(CONVAI_API_KEY_COOKIE);
+    if (apiKeyCookie) {
+      const decryptedKey = await decryptConvaiCookie(apiKeyCookie);
+      if (decryptedKey) apiKey = decryptedKey.trim();
+    }
+  }
+
+  const email = (payload.email ?? '').trim();
+  const username = (payload.username ?? '').trim();
+  const photoUrl = (payload.photoUrl ?? payload.photoURL ?? payload.profilePicture ?? '').trim();
+
+  if (!email && !username) return null;
+
+  return {
+    authenticated: true,
+    apiKey: apiKey || undefined,
+    email,
+    username,
+    photoUrl,
+    companyName: payload.companyName,
+    companyRole: payload.companyRole,
+    providers: payload.providers,
+  };
 }
 
 export function buildConvaiLoginRedirectUrl(returnUrl?: string): string {
   const loginUrl = new URL(getConvaiLoginUrl());
-  loginUrl.searchParams.set(getConvaiLoginReturnParam(), returnUrl ?? window.location.href);
+  loginUrl.searchParams.set('redirect', returnUrl ?? window.location.href);
   return loginUrl.toString();
 }
 
@@ -87,14 +185,8 @@ export function clearConvaiAuthPending(): void {
 export async function fetchConvaiAuthSession(): Promise<ConvaiAuthSession | null> {
   if (!isConvaiAuthConfigured()) return null;
   try {
-    const response = await fetch(getConvaiAuthMeUrl(), {
-      method: 'GET',
-      credentials: 'include',
-      cache: 'no-store',
-    });
-    if (!response.ok) return null;
-    const session = await response.json() as ConvaiAuthSession;
-    if (!session.authenticated) return null;
+    const session = await buildSessionFromCookies();
+    if (!session?.authenticated) return null;
     return session;
   } catch {
     return null;
@@ -123,12 +215,5 @@ export function applyConvaiSessionApiKey(session: ConvaiAuthSession): boolean {
 }
 
 export async function signOutConvai(): Promise<void> {
-  try {
-    await fetch(getConvaiAuthLogoutUrl(), {
-      method: 'POST',
-      credentials: 'include',
-    });
-  } catch {
-    // Static hosts may not reach the Convai logout endpoint.
-  }
+  // Static hosts cannot clear .convai.com cookies cross-origin; local state is cleared in signOutAuth.
 }

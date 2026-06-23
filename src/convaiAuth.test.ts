@@ -3,14 +3,18 @@ import {
   applyConvaiSessionApiKey,
   buildConvaiLoginRedirectUrl,
   clearConvaiAuthPending,
+  CONVAI_API_KEY_COOKIE,
+  CONVAI_AUTH_COOKIE,
   convaiSessionToAuthUser,
+  decryptConvaiCookie,
   fetchConvaiAuthSession,
-  getConvaiAuthMeUrl,
-  getConvaiLoginReturnParam,
+  getConvaiCookie,
+  getConvaiDecryptUrl,
   isConvaiAuthConfigured,
   isConvaiAuthOffered,
   isConvaiAuthPending,
   markConvaiAuthPending,
+  parseDecryptedAuthPayload,
 } from './convaiAuth';
 
 function stubBrowserStorage() {
@@ -33,12 +37,17 @@ function stubBrowserStorage() {
     sessionStorage,
     location: { href: 'https://chess.convai.com/', hostname: 'chess.convai.com' },
   });
+  vi.stubGlobal('document', { cookie: '' });
   return { localStore, sessionStore };
 }
 
 function stubLocalStorage() {
   const { localStore } = stubBrowserStorage();
   return localStore;
+}
+
+function stubCookie(value: string) {
+  vi.stubGlobal('document', { cookie: value });
 }
 
 describe('convaiAuth', () => {
@@ -60,19 +69,7 @@ describe('convaiAuth', () => {
     vi.stubGlobal('window', { location: { href: 'https://chess.convai.com/?coach=leila' } });
     const url = new URL(buildConvaiLoginRedirectUrl());
     expect(url.origin).toBe('https://login.convai.com');
-    expect(url.searchParams.get(getConvaiLoginReturnParam())).toBe('https://chess.convai.com/?coach=leila');
-  });
-
-  it('uses auth.convai.com session endpoints by default', () => {
-    expect(getConvaiAuthMeUrl()).toBe('https://auth.convai.com/api/auth/me');
-  });
-
-  it('supports a custom login return query param via env', () => {
-    vi.stubEnv('VITE_CONVAI_LOGIN_RETURN_PARAM', 'return_url');
-    vi.stubGlobal('window', { location: { href: 'https://chess.convai.com/' } });
-    const url = new URL(buildConvaiLoginRedirectUrl());
-    expect(url.searchParams.get('return_url')).toBe('https://chess.convai.com/');
-    vi.unstubAllEnvs();
+    expect(url.searchParams.get('redirect')).toBe('https://chess.convai.com/?coach=leila');
   });
 
   it('maps an authenticated Convai session to an auth user and stores the API key', () => {
@@ -96,26 +93,96 @@ describe('convaiAuth', () => {
     expect(storage.get('classic-chess.convaiApiKey.v1')).toBe('convai-test-key');
   });
 
-  it('fetches the Convai auth session with credentials included', async () => {
-    vi.stubGlobal('window', { location: { hostname: 'chess.convai.com' } });
+  it('reads convai cookies from document.cookie', () => {
+    stubCookie('other=1; CONVAI_AUTH=encrypted-auth; CONVAI_API_KEY=encrypted-key');
+    expect(getConvaiCookie(CONVAI_AUTH_COOKIE)).toBe('encrypted-auth');
+    expect(getConvaiCookie(CONVAI_API_KEY_COOKIE)).toBe('encrypted-key');
+    expect(getConvaiCookie('missing')).toBeNull();
+  });
+
+  it('parses decrypted auth payload fields', () => {
+    const payload = parseDecryptedAuthPayload(JSON.stringify({
+      email: 'player@convai.com',
+      username: 'Player',
+      photoURL: 'https://example.com/avatar.png',
+      apiKey: 'abc123',
+    }));
+    expect(payload.email).toBe('player@convai.com');
+    expect(payload.photoURL).toBe('https://example.com/avatar.png');
+  });
+
+  it('decrypts cookie values via login.convai.com/api/decrypt', async () => {
     const fetchMock = vi.mocked(fetch).mockResolvedValue({
       ok: true,
+      status: 200,
+      json: async () => ({ decryptedString: '{"email":"player@convai.com"}' }),
+    } as Response);
+
+    const decrypted = await decryptConvaiCookie('encrypted-value');
+    expect(decrypted).toBe('{"email":"player@convai.com"}');
+    expect(fetchMock).toHaveBeenCalledWith(getConvaiDecryptUrl(), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ data: 'encrypted-value' }),
+      cache: 'no-store',
+    });
+  });
+
+  it('builds a session from decrypted CONVAI_AUTH cookie', async () => {
+    vi.stubGlobal('window', { location: { hostname: 'chess.convai.com' } });
+    stubCookie(`${CONVAI_AUTH_COOKIE}=encrypted-auth`);
+    vi.mocked(fetch).mockResolvedValue({
+      ok: true,
+      status: 200,
       json: async () => ({
-        authenticated: true,
-        apiKey: 'abc123',
-        email: 'player@convai.com',
-        username: 'Player',
-        photoUrl: '',
+        decryptedString: JSON.stringify({
+          email: 'player@convai.com',
+          username: 'Player',
+          apiKey: 'abc123',
+          photoUrl: '',
+        }),
       }),
     } as Response);
 
     const session = await fetchConvaiAuthSession();
     expect(session?.apiKey).toBe('abc123');
-    expect(fetchMock).toHaveBeenCalledWith(getConvaiAuthMeUrl(), {
-      method: 'GET',
-      credentials: 'include',
-      cache: 'no-store',
-    });
+    expect(session?.email).toBe('player@convai.com');
+  });
+
+  it('falls back to CONVAI_API_KEY cookie when auth payload has no apiKey', async () => {
+    vi.stubGlobal('window', { location: { hostname: 'chess.convai.com' } });
+    stubCookie(`${CONVAI_AUTH_COOKIE}=encrypted-auth; ${CONVAI_API_KEY_COOKIE}=encrypted-key`);
+    const fetchMock = vi.mocked(fetch);
+    fetchMock
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          decryptedString: JSON.stringify({
+            email: 'player@convai.com',
+            username: 'Player',
+          }),
+        }),
+      } as Response)
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({ decryptedString: 'fallback-api-key' }),
+      } as Response);
+
+    const session = await fetchConvaiAuthSession();
+    expect(session?.apiKey).toBe('fallback-api-key');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('returns null when no auth cookie is present', async () => {
+    vi.stubGlobal('window', { location: { hostname: 'chess.convai.com' } });
+    stubCookie('');
+    const fetchMock = vi.mocked(fetch);
+
+    const session = await fetchConvaiAuthSession();
+    expect(session).toBeNull();
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it('tracks pending Convai redirect state in sessionStorage', () => {

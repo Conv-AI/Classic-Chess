@@ -28,13 +28,7 @@ type Props = {
 
 const SUCCESS_CLOSE_MS = 1800;
 
-export default function AuthSignInModal({
-  open,
-  onClose,
-  onUserChange,
-  startInSuccess = null,
-  startInError = null,
-}: Props) {
+export default function AuthSignInModal({ open, onClose, onUserChange, startInSuccess = null, startInError = null }: Props) {
   const googleClientId = getGoogleClientId();
   const convaiOffered = isConvaiAuthOffered();
   const googleButtonRef = useRef<HTMLDivElement | null>(null);
