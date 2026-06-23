@@ -135,7 +135,7 @@ describe('authUserToIdentity', () => {
     expect(identity?.endUserMetadata.provider).toBe('convai');
   });
 
-  it('skips same-origin auth fetch on static convai deploys', async () => {
+  it('uses same-origin /api/auth/me on convai.com deploys', async () => {
     const store = stubLocalStorage();
     store.set('classic-chess.authUser.v1', JSON.stringify({
       id: 'google-sub',
@@ -152,11 +152,14 @@ describe('authUserToIdentity', () => {
       },
       location: { hostname: 'chess.convai.com' },
     });
-    const fetchMock = vi.fn();
+    const fetchMock = vi.fn().mockResolvedValue({
+      status: 404,
+      ok: false,
+    } as Response);
     vi.stubGlobal('fetch', fetchMock);
 
     const user = await fetchAuthUser();
     expect(user?.email).toBe('cached@example.com');
-    expect(fetchMock).not.toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledWith('/api/auth/me', { credentials: 'include' });
   });
 });

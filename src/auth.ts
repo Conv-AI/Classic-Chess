@@ -104,10 +104,13 @@ export function authUserToIdentity(user: AuthUser | null): UserIdentity | null {
   };
 }
 
+import { isConvaiProductionHost } from './convaiAuth';
+
 function shouldUseSameOriginGoogleAuth(): boolean {
   if (typeof window === 'undefined') return false;
   const host = window.location.hostname.toLowerCase();
-  return host === 'localhost' || host === '127.0.0.1';
+  if (host === 'localhost' || host === '127.0.0.1') return true;
+  return isConvaiProductionHost();
 }
 
 export async function fetchAuthUser(): Promise<AuthUser | null> {
