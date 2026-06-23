@@ -5,7 +5,7 @@ import {
   clearConvaiAuthPending,
   convaiSessionToAuthUser,
   fetchConvaiAuthSession,
-  getConvaiAuthMeUrl,
+  getConvaiDecryptUrl,
   isConvaiAuthConfigured,
   isConvaiAuthOffered,
   isConvaiAuthPending,
@@ -60,6 +60,7 @@ describe('convaiAuth', () => {
     const url = new URL(buildConvaiLoginRedirectUrl());
     expect(url.origin).toBe('https://login.convai.com');
     expect(url.searchParams.get('redirect')).toBe('https://chess.convai.com/?coach=leila');
+    expect(url.searchParams.get('return_url')).toBe('https://chess.convai.com/?coach=leila');
   });
 
   it('maps an authenticated Convai session to an auth user and stores the API key', () => {
@@ -83,30 +84,56 @@ describe('convaiAuth', () => {
     expect(storage.get('classic-chess.convaiApiKey.v1')).toBe('convai-test-key');
   });
 
-  it('uses auth.convai.com session endpoints by default', () => {
-    expect(getConvaiAuthMeUrl()).toBe('https://auth.convai.com/api/auth/me');
+  it('uses login.convai.com decrypt endpoint by default', () => {
+    expect(getConvaiDecryptUrl()).toBe('https://login.convai.com/api/decrypt');
   });
 
-  it('fetches the Convai auth session with credentials included', async () => {
+  it('fetches the Convai auth session via decrypt with credentials included', async () => {
     vi.stubGlobal('window', { location: { hostname: 'chess.convai.com' } });
     const fetchMock = vi.mocked(fetch).mockResolvedValue({
       ok: true,
       json: async () => ({
-        authenticated: true,
-        apiKey: 'abc123',
-        email: 'player@convai.com',
-        username: 'Player',
-        photoUrl: '',
+        decryptedData: JSON.stringify({
+          apiKey: 'abc123',
+          email: 'player@convai.com',
+          username: 'Player',
+          photoUrl: '',
+        }),
       }),
     } as Response);
 
     const session = await fetchConvaiAuthSession();
     expect(session?.apiKey).toBe('abc123');
-    expect(fetchMock).toHaveBeenCalledWith(getConvaiAuthMeUrl(), {
-      method: 'GET',
+    expect(fetchMock).toHaveBeenCalledWith(getConvaiDecryptUrl(), {
+      method: 'POST',
       credentials: 'include',
       cache: 'no-store',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
     });
+  });
+
+  it('falls back to /api/auth/me when decrypt returns empty data', async () => {
+    vi.stubGlobal('window', { location: { hostname: 'chess.convai.com' } });
+    const fetchMock = vi.mocked(fetch)
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ decryptedData: '' }),
+      } as Response)
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          authenticated: true,
+          apiKey: 'fallback-key',
+          email: 'player@convai.com',
+          username: 'Player',
+          photoUrl: '',
+        }),
+      } as Response);
+
+    const session = await fetchConvaiAuthSession();
+    expect(session?.apiKey).toBe('fallback-key');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it('tracks pending Convai redirect state in sessionStorage', () => {
