@@ -13,16 +13,10 @@ export type ConvaiAuthSession = {
 };
 
 const DEFAULT_LOGIN_URL = 'https://login.convai.com';
-const SAME_ORIGIN_AUTH_ME_URL = '/api/auth/me';
-const SAME_ORIGIN_AUTH_LOGOUT_URL = '/api/auth/logout';
+const DEFAULT_AUTH_ME_URL = 'https://auth.convai.com/api/auth/me';
+const DEFAULT_AUTH_LOGOUT_URL = 'https://auth.convai.com/api/auth/logout';
+const DEFAULT_LOGIN_RETURN_PARAM = 'redirect';
 const CONVAI_AUTH_PENDING_KEY = 'classic-chess.convaiAuthPending.v1';
-
-/** True on convai.com and its subdomains (e.g. chess.convai.com). */
-export function isConvaiProductionHost(): boolean {
-  if (typeof window === 'undefined') return false;
-  const host = window.location.hostname.toLowerCase();
-  return host === 'convai.com' || host.endsWith('.convai.com');
-}
 
 /** Always offered in the sign-in modal unless explicitly disabled. */
 export function isConvaiAuthOffered(): boolean {
@@ -35,16 +29,12 @@ export function getConvaiLoginUrl(): string {
   return import.meta.env.VITE_CONVAI_LOGIN_URL?.trim() || DEFAULT_LOGIN_URL;
 }
 
-/**
- * Playground pattern: same-origin /api/auth/me on convai hosts.
- * The server reads CONVAI_AUTH cookies and decrypts them — no cross-origin fetch.
- */
 export function getConvaiAuthMeUrl(): string {
-  return import.meta.env.VITE_CONVAI_AUTH_ME_URL?.trim() || SAME_ORIGIN_AUTH_ME_URL;
+  return import.meta.env.VITE_CONVAI_AUTH_ME_URL?.trim() || DEFAULT_AUTH_ME_URL;
 }
 
 export function getConvaiAuthLogoutUrl(): string {
-  return import.meta.env.VITE_CONVAI_AUTH_LOGOUT_URL?.trim() || SAME_ORIGIN_AUTH_LOGOUT_URL;
+  return import.meta.env.VITE_CONVAI_AUTH_LOGOUT_URL?.trim() || DEFAULT_AUTH_LOGOUT_URL;
 }
 
 /** True on *.convai.com deploys, when explicitly enabled, or when auth URLs are overridden. */
@@ -53,15 +43,20 @@ export function isConvaiAuthConfigured(): boolean {
   if (forced === 'true') return true;
   if (forced === 'false') return false;
   if (import.meta.env.VITE_CONVAI_AUTH_ME_URL?.trim()) return true;
-  if (isConvaiProductionHost()) return true;
+  if (typeof window !== 'undefined') {
+    const host = window.location.hostname.toLowerCase();
+    if (host === 'convai.com' || host.endsWith('.convai.com')) return true;
+  }
   return false;
+}
+
+export function getConvaiLoginReturnParam(): string {
+  return import.meta.env.VITE_CONVAI_LOGIN_RETURN_PARAM?.trim() || DEFAULT_LOGIN_RETURN_PARAM;
 }
 
 export function buildConvaiLoginRedirectUrl(returnUrl?: string): string {
   const loginUrl = new URL(getConvaiLoginUrl());
-  const target = returnUrl ?? window.location.href;
-  loginUrl.searchParams.set('redirect', target);
-  loginUrl.searchParams.set('return_url', target);
+  loginUrl.searchParams.set(getConvaiLoginReturnParam(), returnUrl ?? window.location.href);
   return loginUrl.toString();
 }
 
@@ -134,6 +129,6 @@ export async function signOutConvai(): Promise<void> {
       credentials: 'include',
     });
   } catch {
-    // Static hosts may not have a logout route yet.
+    // Static hosts may not reach the Convai logout endpoint.
   }
 }

@@ -23,11 +23,18 @@ type Props = {
   onClose: () => void;
   onUserChange: (user: AuthUser) => void;
   startInSuccess?: AuthUser | null;
+  startInError?: string | null;
 };
 
 const SUCCESS_CLOSE_MS = 1800;
 
-export default function AuthSignInModal({ open, onClose, onUserChange, startInSuccess = null }: Props) {
+export default function AuthSignInModal({
+  open,
+  onClose,
+  onUserChange,
+  startInSuccess = null,
+  startInError = null,
+}: Props) {
   const googleClientId = getGoogleClientId();
   const convaiOffered = isConvaiAuthOffered();
   const googleButtonRef = useRef<HTMLDivElement | null>(null);
@@ -82,8 +89,13 @@ export default function AuthSignInModal({ open, onClose, onUserChange, startInSu
       }, SUCCESS_CLOSE_MS);
       return;
     }
+    if (startInError) {
+      setPhase('error');
+      setStatus(startInError);
+      return;
+    }
     resetModal();
-  }, [open, startInSuccess, resetModal, handleClose]);
+  }, [open, startInSuccess, startInError, resetModal, handleClose]);
 
   useEffect(() => {
     return () => {

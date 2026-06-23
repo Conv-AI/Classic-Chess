@@ -6,6 +6,7 @@ import {
   convaiSessionToAuthUser,
   fetchConvaiAuthSession,
   getConvaiAuthMeUrl,
+  getConvaiLoginReturnParam,
   isConvaiAuthConfigured,
   isConvaiAuthOffered,
   isConvaiAuthPending,
@@ -59,8 +60,19 @@ describe('convaiAuth', () => {
     vi.stubGlobal('window', { location: { href: 'https://chess.convai.com/?coach=leila' } });
     const url = new URL(buildConvaiLoginRedirectUrl());
     expect(url.origin).toBe('https://login.convai.com');
-    expect(url.searchParams.get('redirect')).toBe('https://chess.convai.com/?coach=leila');
-    expect(url.searchParams.get('return_url')).toBe('https://chess.convai.com/?coach=leila');
+    expect(url.searchParams.get(getConvaiLoginReturnParam())).toBe('https://chess.convai.com/?coach=leila');
+  });
+
+  it('uses auth.convai.com session endpoints by default', () => {
+    expect(getConvaiAuthMeUrl()).toBe('https://auth.convai.com/api/auth/me');
+  });
+
+  it('supports a custom login return query param via env', () => {
+    vi.stubEnv('VITE_CONVAI_LOGIN_RETURN_PARAM', 'return_url');
+    vi.stubGlobal('window', { location: { href: 'https://chess.convai.com/' } });
+    const url = new URL(buildConvaiLoginRedirectUrl());
+    expect(url.searchParams.get('return_url')).toBe('https://chess.convai.com/');
+    vi.unstubAllEnvs();
   });
 
   it('maps an authenticated Convai session to an auth user and stores the API key', () => {
@@ -84,11 +96,6 @@ describe('convaiAuth', () => {
     expect(storage.get('classic-chess.convaiApiKey.v1')).toBe('convai-test-key');
   });
 
-  it('uses same-origin /api/auth/me on convai.com subdomains', () => {
-    vi.stubGlobal('window', { location: { hostname: 'chess.convai.com' } });
-    expect(getConvaiAuthMeUrl()).toBe('/api/auth/me');
-  });
-
   it('fetches the Convai auth session with credentials included', async () => {
     vi.stubGlobal('window', { location: { hostname: 'chess.convai.com' } });
     const fetchMock = vi.mocked(fetch).mockResolvedValue({
@@ -104,7 +111,7 @@ describe('convaiAuth', () => {
 
     const session = await fetchConvaiAuthSession();
     expect(session?.apiKey).toBe('abc123');
-    expect(fetchMock).toHaveBeenCalledWith('/api/auth/me', {
+    expect(fetchMock).toHaveBeenCalledWith(getConvaiAuthMeUrl(), {
       method: 'GET',
       credentials: 'include',
       cache: 'no-store',

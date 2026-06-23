@@ -5,6 +5,7 @@ interface ImportMetaEnv {
   readonly VITE_CONVAI_AUTH_ME_URL?: string;
   readonly VITE_CONVAI_AUTH_LOGOUT_URL?: string;
   readonly VITE_CONVAI_AUTH_ENABLED?: string;
+  readonly VITE_CONVAI_LOGIN_RETURN_PARAM?: string;
 }
 
 interface ImportMeta {
