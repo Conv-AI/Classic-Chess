@@ -227,6 +227,10 @@ function setStoredStaticAuthUser(user: AuthUser): void {
   } catch {}
 }
 
+export function persistAuthUser(user: AuthUser): void {
+  setStoredStaticAuthUser(user);
+}
+
 function clearStoredStaticAuthUser(): void {
   try {
     window.localStorage.removeItem(STATIC_AUTH_STORAGE_KEY);

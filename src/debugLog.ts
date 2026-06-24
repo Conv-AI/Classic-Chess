@@ -8,7 +8,7 @@ const DEDUP_WINDOW_MS = 3000;
 const FLUSH_INTERVAL_MS = 200;
 const MAX_MESSAGE_LENGTH = 700;
 const MAX_BUFFER_ENTRIES = 2000;
-const SLOW_DEDUP_SCOPES = new Set(['CoachCard', 'ReallusionCharacter']);
+const SLOW_DEDUP_SCOPES = new Set(['CoachCard', 'ReallusionCharacter', 'ConvaiAuth']);
 
 // key → last timestamp
 const recentKeys = new Map<string, number>();

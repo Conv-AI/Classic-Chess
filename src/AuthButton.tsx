@@ -1,13 +1,14 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { LogOut, UserRound } from 'lucide-react';
 import {
   fetchAuthUser,
+  getCachedAuthUser,
   getGoogleClientId,
+  persistAuthUser,
   signOutAuth,
   type AuthUser,
 } from './auth';
 import AuthSignInModal from './AuthSignInModal';
-import { debugLog } from './debugLog';
 import {
   applyConvaiSessionApiKey,
   clearConvaiAuthPending,
@@ -29,8 +30,22 @@ type Props = {
 
 const CONVAI_SESSION_ERROR = 'Could not read your Convai session. Try signing in again.';
 
+let authBootstrapDone = false;
+
 export function isAuthOffered(): boolean {
   return Boolean(getGoogleClientId()) || isConvaiAuthOffered();
+}
+
+function applyConvaiSession(
+  session: NonNullable<Awaited<ReturnType<typeof fetchConvaiAuthSessionResult>>['session']>,
+  onUserChange: (user: AuthUser | null) => void,
+  onApiKeyApplied?: () => void,
+): AuthUser {
+  const nextUser = convaiSessionToAuthUser(session);
+  persistAuthUser(nextUser);
+  if (applyConvaiSessionApiKey(session)) onApiKeyApplied?.();
+  onUserChange(nextUser);
+  return nextUser;
 }
 
 export default function AuthButton({ user, onUserChange, onApiKeyApplied }: Props) {
@@ -39,49 +54,55 @@ export default function AuthButton({ user, onUserChange, onApiKeyApplied }: Prop
   const [convaiSuccessUser, setConvaiSuccessUser] = useState<AuthUser | null>(null);
   const [convaiRestoreError, setConvaiRestoreError] = useState<string | null>(null);
   const [status, setStatus] = useState('');
+  const onUserChangeRef = useRef(onUserChange);
+  const onApiKeyAppliedRef = useRef(onApiKeyApplied);
 
   useEffect(() => {
+    onUserChangeRef.current = onUserChange;
+  }, [onUserChange]);
+
+  useEffect(() => {
+    onApiKeyAppliedRef.current = onApiKeyApplied;
+  }, [onApiKeyApplied]);
+
+  useEffect(() => {
+    if (authBootstrapDone) return;
+    authBootstrapDone = true;
+
     let cancelled = false;
     void (async () => {
       const returningFromConvai = isConvaiAuthPending();
-      debugLog('ConvaiAuth', `AuthButton restore start returningFromConvai=${returningFromConvai}`);
 
-      if (isConvaiAuthConfigured()) {
+      if (returningFromConvai && isConvaiAuthConfigured()) {
         const { session, reason } = await fetchConvaiAuthSessionResult();
         if (cancelled) return;
         if (session) {
-          const nextUser = convaiSessionToAuthUser(session);
-          if (applyConvaiSessionApiKey(session)) onApiKeyApplied?.();
+          const nextUser = applyConvaiSession(session, onUserChangeRef.current, onApiKeyAppliedRef.current);
           clearConvaiAuthPending();
-          onUserChange(nextUser);
-          debugLog('ConvaiAuth', `AuthButton signed in as ${nextUser.email || nextUser.name}`);
-          if (returningFromConvai) {
-            setConvaiSuccessUser(nextUser);
-            setSignInModalOpen(true);
-          }
+          setConvaiSuccessUser(nextUser);
+          setSignInModalOpen(true);
           return;
         }
         clearConvaiAuthPending();
-        if (returningFromConvai) {
-          debugLog('ConvaiAuth', `AuthButton showing restore error: ${reason ?? CONVAI_SESSION_ERROR}`);
-          setConvaiRestoreError(reason ?? CONVAI_SESSION_ERROR);
-          setSignInModalOpen(true);
-        }
-      }
-
-      const cachedUser = await fetchAuthUser();
-      if (cancelled) return;
-      if (cachedUser) {
-        onUserChange(cachedUser);
+        setConvaiRestoreError(reason ?? CONVAI_SESSION_ERROR);
+        setSignInModalOpen(true);
         return;
       }
 
-      if (!cancelled) onUserChange(null);
+      const cachedUser = getCachedAuthUser() ?? await fetchAuthUser();
+      if (cancelled) return;
+      if (cachedUser) {
+        onUserChangeRef.current(cachedUser);
+        return;
+      }
+
+      if (!cancelled) onUserChangeRef.current(null);
     })().catch(() => {
-      if (!cancelled) onUserChange(null);
+      if (!cancelled) onUserChangeRef.current(null);
     });
+
     return () => { cancelled = true; };
-  }, [onApiKeyApplied, onUserChange]);
+  }, []);
 
   async function handleSignOut() {
     unlockUiAudio();
@@ -114,8 +135,8 @@ export default function AuthButton({ user, onUserChange, onApiKeyApplied }: Prop
   }
 
   function handleSignedIn(nextUser: AuthUser) {
+    persistAuthUser(nextUser);
     onUserChange(nextUser);
-    if (nextUser.provider === 'convai') onApiKeyApplied?.();
   }
 
   if (!isAuthOffered() && !user) return null;

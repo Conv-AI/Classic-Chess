@@ -41,6 +41,16 @@ const CONVAI_AUTH_PENDING_KEY = 'classic-chess.convaiAuthPending.v1';
 export const CONVAI_AUTH_COOKIE = 'CONVAI_AUTH';
 export const CONVAI_API_KEY_COOKIE = 'CONVAI_API_KEY';
 
+let sessionFetchPromise: Promise<ConvaiAuthFetchResult> | null = null;
+
+function convaiLog(message: string): void {
+  if (import.meta.env.DEV) debugLog('ConvaiAuth', message);
+}
+
+function convaiWarn(message: string): void {
+  debugLog('ConvaiAuth', message);
+}
+
 /** Always offered in the sign-in modal unless explicitly disabled. */
 export function isConvaiAuthOffered(): boolean {
   const forced = import.meta.env.VITE_CONVAI_AUTH_ENABLED?.trim().toLowerCase();
@@ -142,7 +152,7 @@ async function postDecryptRequest(
 ): Promise<DecryptResult> {
   const bodyKey = Object.keys(body)[0] ?? 'data';
   const started = performance.now();
-  debugLog('ConvaiAuth', `decrypt request (${label}) url=${url} field=${bodyKey} len=${body[bodyKey]?.length ?? 0}`);
+  convaiLog(`decrypt request (${label}) field=${bodyKey} len=${body[bodyKey]?.length ?? 0}`);
 
   try {
     const response = await fetch(url, {
@@ -158,7 +168,7 @@ async function postDecryptRequest(
       try {
         parsed = JSON.parse(rawText) as Record<string, unknown>;
       } catch {
-        debugLog('ConvaiAuth', `decrypt ${label} non-JSON response (${rawText.slice(0, 120)}${rawText.length > 120 ? '...' : ''})`);
+        convaiWarn(`decrypt ${label} non-JSON response (${rawText.slice(0, 120)}${rawText.length > 120 ? '...' : ''})`);
         parsed = {};
       }
     }
@@ -170,18 +180,18 @@ async function postDecryptRequest(
         ? parsed.error
         : (rawText || summarizeResponseBody(parsed));
       const reason = `decrypt ${label} failed: HTTP ${response.status}${detail ? ` (${detail.slice(0, 160)})` : ''}`;
-      debugLog('ConvaiAuth', `${reason} (${elapsedMs}ms)`);
+      convaiWarn(`${reason} (${elapsedMs}ms)`);
       return { ok: false, reason };
     }
 
     const value = extractDecryptedValue(parsed);
     if (!value) {
       const reason = `decrypt ${label} returned 200 but no decrypted payload (${summarizeResponseBody(parsed)})`;
-      debugLog('ConvaiAuth', `${reason} (${elapsedMs}ms)`);
+      convaiWarn(`${reason} (${elapsedMs}ms)`);
       return { ok: false, reason };
     }
 
-    debugLog('ConvaiAuth', `decrypt ${label} ok valueLen=${value.length} (${elapsedMs}ms)`);
+    convaiLog(`decrypt ${label} ok (${elapsedMs}ms)`);
     return { ok: true, value };
   } catch (error) {
     const elapsedMs = Math.round(performance.now() - started);
@@ -190,7 +200,7 @@ async function postDecryptRequest(
       ? ' (likely CORS — ask Convai to allow https://chess.convai.com on POST /api/decrypt)'
       : '';
     const reason = `decrypt ${label} network error: ${message}${corsHint}`;
-    debugLog('ConvaiAuth', `${reason} (${elapsedMs}ms)`);
+    convaiWarn(`${reason} (${elapsedMs}ms)`);
     return { ok: false, reason };
   }
 }
@@ -211,30 +221,30 @@ export async function decryptConvaiCookieDetailed(encrypted: string): Promise<De
   if (primary.ok) return primary;
 
   if (primary.reason.includes('HTTP 400')) {
-    debugLog('ConvaiAuth', 'retrying decrypt with encryptedString field after HTTP 400');
+    convaiLog('retrying decrypt with encryptedString field after HTTP 400');
     const fallback = await postDecryptRequest(url, { encryptedString: value }, 'encryptedString');
     if (fallback.ok) return fallback;
     return fallback;
   }
 
-  debugLog('ConvaiAuth', `skipping encryptedString fallback (${primary.reason})`);
+  convaiLog(`skipping encryptedString fallback (${primary.reason})`);
   return primary;
 }
 
 async function buildSessionFromCookies(): Promise<ConvaiAuthFetchResult> {
   const visibleCookies = listVisibleCookieNames();
-  debugLog('ConvaiAuth', `visible cookies: ${visibleCookies.length ? visibleCookies.join(', ') : 'none'}`);
+  convaiLog(`visible cookies: ${visibleCookies.length ? visibleCookies.join(', ') : 'none'}`);
 
   const authCookie = getConvaiCookie(CONVAI_AUTH_COOKIE);
   if (!authCookie) {
     const reason = visibleCookies.includes(CONVAI_AUTH_COOKIE)
       ? 'CONVAI_AUTH cookie exists but could not be read'
       : 'CONVAI_AUTH cookie not visible to JavaScript (missing or HttpOnly)';
-    debugLog('ConvaiAuth', `session restore failed: ${reason}`);
+    convaiWarn(`session restore failed: ${reason}`);
     return { session: null, reason };
   }
 
-  debugLog('ConvaiAuth', `CONVAI_AUTH present (${authCookie.length} chars)`);
+  convaiLog(`CONVAI_AUTH present (${authCookie.length} chars)`);
 
   const decryptedAuthResult = await decryptConvaiCookieDetailed(authCookie);
   if (!decryptedAuthResult.ok) {
@@ -244,7 +254,7 @@ async function buildSessionFromCookies(): Promise<ConvaiAuthFetchResult> {
   const payload = parseDecryptedAuthPayload(decryptedAuthResult.value);
   if (!payload.email && !payload.username) {
     const reason = 'decrypted CONVAI_AUTH payload is missing email and username';
-    debugLog('ConvaiAuth', `${reason} payloadFields=${summarizePayloadFields(payload)}`);
+    convaiWarn(`${reason} payloadFields=${summarizePayloadFields(payload)}`);
     return { session: null, reason };
   }
 
@@ -253,15 +263,15 @@ async function buildSessionFromCookies(): Promise<ConvaiAuthFetchResult> {
   if (!apiKey) {
     const apiKeyCookie = getConvaiCookie(CONVAI_API_KEY_COOKIE);
     if (apiKeyCookie) {
-      debugLog('ConvaiAuth', `CONVAI_API_KEY present (${apiKeyCookie.length} chars), decrypting`);
+      convaiLog(`CONVAI_API_KEY present (${apiKeyCookie.length} chars), decrypting`);
       const decryptedKeyResult = await decryptConvaiCookieDetailed(apiKeyCookie);
       if (decryptedKeyResult.ok) {
         apiKey = decryptedKeyResult.value.trim();
       } else {
-        debugLog('ConvaiAuth', `api key decrypt failed: ${decryptedKeyResult.reason}`);
+        convaiWarn(`api key decrypt failed: ${decryptedKeyResult.reason}`);
       }
     } else {
-      debugLog('ConvaiAuth', 'no apiKey in auth payload and CONVAI_API_KEY cookie missing');
+      convaiLog('no apiKey in auth payload and CONVAI_API_KEY cookie missing');
     }
   }
 
@@ -269,7 +279,7 @@ async function buildSessionFromCookies(): Promise<ConvaiAuthFetchResult> {
   const username = (payload.username ?? '').trim();
   const photoUrl = (payload.photoUrl ?? payload.photoURL ?? payload.profilePicture ?? '').trim();
 
-  debugLog('ConvaiAuth', `session ok email=${email || '(none)'} username=${username || '(none)'} apiKey=${apiKey ? 'yes' : 'no'}`);
+  convaiLog(`session ok email=${email || '(none)'} username=${username || '(none)'} apiKey=${apiKey ? 'yes' : 'no'}`);
 
   return {
     session: {
@@ -294,7 +304,7 @@ export function buildConvaiLoginRedirectUrl(returnUrl?: string): string {
 
 export function signInWithConvaiRedirect(returnUrl?: string): void {
   const redirectUrl = buildConvaiLoginRedirectUrl(returnUrl);
-  debugLog('ConvaiAuth', `redirecting to login url=${redirectUrl}`);
+  convaiLog(`redirecting to login`);
   window.location.href = redirectUrl;
 }
 
@@ -320,28 +330,29 @@ export function clearConvaiAuthPending(): void {
 
 export async function fetchConvaiAuthSessionResult(): Promise<ConvaiAuthFetchResult> {
   if (!isConvaiAuthConfigured()) {
-    debugLog('ConvaiAuth', 'session restore skipped: host not configured for Convai auth');
     return { session: null, reason: 'Convai auth is not configured for this host' };
   }
 
-  debugLog(
-    'ConvaiAuth',
-    `session restore start host=${window.location.hostname} pending=${isConvaiAuthPending()} decryptUrl=${getConvaiDecryptUrl()}`,
-  );
+  if (sessionFetchPromise) return sessionFetchPromise;
 
-  try {
-    const result = await buildSessionFromCookies();
-    if (result.session) {
-      debugLog('ConvaiAuth', 'session restore succeeded');
-    } else {
-      debugLog('ConvaiAuth', `session restore failed: ${result.reason ?? 'unknown'}`);
+  sessionFetchPromise = (async () => {
+    convaiLog(`session restore start host=${window.location.hostname} pending=${isConvaiAuthPending()}`);
+    try {
+      const result = await buildSessionFromCookies();
+      if (!result.session) {
+        convaiWarn(`session restore failed: ${result.reason ?? 'unknown'}`);
+      }
+      return result;
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : 'Unexpected Convai auth error';
+      convaiWarn(`session restore threw: ${reason}`);
+      return { session: null, reason };
+    } finally {
+      sessionFetchPromise = null;
     }
-    return result;
-  } catch (error) {
-    const reason = error instanceof Error ? error.message : 'Unexpected Convai auth error';
-    debugLog('ConvaiAuth', `session restore threw: ${reason}`);
-    return { session: null, reason };
-  }
+  })();
+
+  return sessionFetchPromise;
 }
 
 export async function fetchConvaiAuthSession(): Promise<ConvaiAuthSession | null> {
@@ -366,12 +377,12 @@ export function convaiSessionToAuthUser(session: ConvaiAuthSession): AuthUser {
 export function applyConvaiSessionApiKey(session: ConvaiAuthSession): boolean {
   const apiKey = session.apiKey?.trim();
   if (!apiKey) {
-    debugLog('ConvaiAuth', 'api key not stored: session had no apiKey');
+    convaiLog('api key not stored: session had no apiKey');
     return false;
   }
-  setStoredConvaiApiKey(apiKey);
-  debugLog('ConvaiAuth', `api key stored len=${apiKey.length}`);
-  return true;
+  const stored = setStoredConvaiApiKey(apiKey);
+  if (stored) convaiLog(`api key stored len=${apiKey.length}`);
+  return stored;
 }
 
 export async function signOutConvai(): Promise<void> {

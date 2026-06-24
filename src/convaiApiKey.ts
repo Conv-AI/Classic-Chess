@@ -20,13 +20,17 @@ export function hasConvaiApiKey(): boolean {
   return Boolean(getConvaiApiKey());
 }
 
-export function setStoredConvaiApiKey(key: string): void {
+export function setStoredConvaiApiKey(key: string): boolean {
   const trimmed = key.trim();
+  const existing = getStoredConvaiApiKey();
   if (!trimmed) {
+    if (!existing) return false;
     window.localStorage.removeItem(STORAGE_KEY);
-    return;
+    return true;
   }
+  if (trimmed === existing) return false;
   window.localStorage.setItem(STORAGE_KEY, trimmed);
+  return true;
 }
 
 export function maskConvaiApiKey(key: string): string {
