@@ -113,8 +113,20 @@ function summarizeResponseBody(body: Record<string, unknown>): string {
 }
 
 function extractDecryptedValue(body: Record<string, unknown>): string | null {
-  const wrapped = body.decryptedString ?? body.data ?? body.decrypted ?? body.result;
+  const wrapped = body.decryptedString
+    ?? body.decryptedData
+    ?? body.data
+    ?? body.decrypted
+    ?? body.result;
+
   if (typeof wrapped === 'string' && wrapped.trim()) return wrapped.trim();
+
+  if (wrapped && typeof wrapped === 'object' && !Array.isArray(wrapped)) {
+    const record = wrapped as Record<string, unknown>;
+    if (typeof record.email === 'string' || typeof record.username === 'string' || typeof record.apiKey === 'string') {
+      return JSON.stringify(record);
+    }
+  }
 
   if (typeof body.email === 'string' || typeof body.username === 'string') {
     return JSON.stringify(body);

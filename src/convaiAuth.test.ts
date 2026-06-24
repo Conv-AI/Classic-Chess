@@ -205,6 +205,47 @@ describe('convaiAuth', () => {
     expect(result.reason).toBeNull();
   });
 
+  it('accepts decrypt responses with decryptedData object', async () => {
+    vi.stubGlobal('window', { location: { hostname: 'chess.convai.com' } });
+    stubCookie(`${CONVAI_AUTH_COOKIE}=encrypted-auth`);
+    vi.mocked(fetch).mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({
+        decryptedData: {
+          email: 'player@convai.com',
+          username: 'Player',
+          apiKey: 'from-decrypted-data',
+        },
+      }),
+    } as Response);
+
+    const result = await fetchConvaiAuthSessionResult();
+    expect(result.session?.apiKey).toBe('from-decrypted-data');
+    expect(result.session?.email).toBe('player@convai.com');
+    expect(result.reason).toBeNull();
+  });
+
+  it('accepts decrypt responses with decryptedData string', async () => {
+    vi.stubGlobal('window', { location: { hostname: 'chess.convai.com' } });
+    stubCookie(`${CONVAI_AUTH_COOKIE}=encrypted-auth`);
+    vi.mocked(fetch).mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({
+        decryptedData: JSON.stringify({
+          email: 'player@convai.com',
+          username: 'Player',
+          apiKey: 'string-payload-key',
+        }),
+      }),
+    } as Response);
+
+    const result = await fetchConvaiAuthSessionResult();
+    expect(result.session?.apiKey).toBe('string-payload-key');
+    expect(result.reason).toBeNull();
+  });
+
   it('tracks pending Convai redirect state in sessionStorage', () => {
     stubBrowserStorage();
     expect(isConvaiAuthPending()).toBe(false);
