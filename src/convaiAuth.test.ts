@@ -124,7 +124,6 @@ describe('convaiAuth', () => {
     expect(fetchMock).toHaveBeenCalledWith(getConvaiDecryptUrl(), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      credentials: 'include',
       body: JSON.stringify({ data: 'encrypted-value' }),
       cache: 'no-store',
     });

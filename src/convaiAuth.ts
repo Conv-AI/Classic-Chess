@@ -136,7 +136,6 @@ async function postDecryptRequest(
     const response = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      credentials: 'include',
       body: JSON.stringify(body),
       cache: 'no-store',
     });
@@ -174,7 +173,11 @@ async function postDecryptRequest(
     return { ok: true, value };
   } catch (error) {
     const elapsedMs = Math.round(performance.now() - started);
-    const reason = `decrypt ${label} network error: ${error instanceof Error ? error.message : String(error)}`;
+    const message = error instanceof Error ? error.message : String(error);
+    const corsHint = message === 'Failed to fetch'
+      ? ' (likely CORS — ask Convai to allow https://chess.convai.com on POST /api/decrypt)'
+      : '';
+    const reason = `decrypt ${label} network error: ${message}${corsHint}`;
     debugLog('ConvaiAuth', `${reason} (${elapsedMs}ms)`);
     return { ok: false, reason };
   }
