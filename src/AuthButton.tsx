@@ -7,11 +7,12 @@ import {
   type AuthUser,
 } from './auth';
 import AuthSignInModal from './AuthSignInModal';
+import { debugLog } from './debugLog';
 import {
   applyConvaiSessionApiKey,
   clearConvaiAuthPending,
   convaiSessionToAuthUser,
-  fetchConvaiAuthSession,
+  fetchConvaiAuthSessionResult,
   isConvaiAuthConfigured,
   isConvaiAuthOffered,
   isConvaiAuthPending,
@@ -43,15 +44,17 @@ export default function AuthButton({ user, onUserChange, onApiKeyApplied }: Prop
     let cancelled = false;
     void (async () => {
       const returningFromConvai = isConvaiAuthPending();
+      debugLog('ConvaiAuth', `AuthButton restore start returningFromConvai=${returningFromConvai}`);
 
       if (isConvaiAuthConfigured()) {
-        const session = await fetchConvaiAuthSession();
+        const { session, reason } = await fetchConvaiAuthSessionResult();
         if (cancelled) return;
         if (session) {
           const nextUser = convaiSessionToAuthUser(session);
           if (applyConvaiSessionApiKey(session)) onApiKeyApplied?.();
           clearConvaiAuthPending();
           onUserChange(nextUser);
+          debugLog('ConvaiAuth', `AuthButton signed in as ${nextUser.email || nextUser.name}`);
           if (returningFromConvai) {
             setConvaiSuccessUser(nextUser);
             setSignInModalOpen(true);
@@ -60,7 +63,8 @@ export default function AuthButton({ user, onUserChange, onApiKeyApplied }: Prop
         }
         clearConvaiAuthPending();
         if (returningFromConvai) {
-          setConvaiRestoreError(CONVAI_SESSION_ERROR);
+          debugLog('ConvaiAuth', `AuthButton showing restore error: ${reason ?? CONVAI_SESSION_ERROR}`);
+          setConvaiRestoreError(reason ?? CONVAI_SESSION_ERROR);
           setSignInModalOpen(true);
         }
       }

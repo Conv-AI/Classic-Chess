@@ -8,6 +8,7 @@ import {
   convaiSessionToAuthUser,
   decryptConvaiCookie,
   fetchConvaiAuthSession,
+  fetchConvaiAuthSessionResult,
   getConvaiCookie,
   getConvaiDecryptUrl,
   isConvaiAuthConfigured,
@@ -115,7 +116,7 @@ describe('convaiAuth', () => {
     const fetchMock = vi.mocked(fetch).mockResolvedValue({
       ok: true,
       status: 200,
-      json: async () => ({ decryptedString: '{"email":"player@convai.com"}' }),
+      text: async () => JSON.stringify({ decryptedString: '{"email":"player@convai.com"}' }),
     } as Response);
 
     const decrypted = await decryptConvaiCookie('encrypted-value');
@@ -123,6 +124,7 @@ describe('convaiAuth', () => {
     expect(fetchMock).toHaveBeenCalledWith(getConvaiDecryptUrl(), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
       body: JSON.stringify({ data: 'encrypted-value' }),
       cache: 'no-store',
     });
@@ -134,7 +136,7 @@ describe('convaiAuth', () => {
     vi.mocked(fetch).mockResolvedValue({
       ok: true,
       status: 200,
-      json: async () => ({
+      text: async () => JSON.stringify({
         decryptedString: JSON.stringify({
           email: 'player@convai.com',
           username: 'Player',
@@ -157,7 +159,7 @@ describe('convaiAuth', () => {
       .mockResolvedValueOnce({
         ok: true,
         status: 200,
-        json: async () => ({
+        text: async () => JSON.stringify({
           decryptedString: JSON.stringify({
             email: 'player@convai.com',
             username: 'Player',
@@ -167,7 +169,7 @@ describe('convaiAuth', () => {
       .mockResolvedValueOnce({
         ok: true,
         status: 200,
-        json: async () => ({ decryptedString: 'fallback-api-key' }),
+        text: async () => JSON.stringify({ decryptedString: 'fallback-api-key' }),
       } as Response);
 
     const session = await fetchConvaiAuthSession();
@@ -180,9 +182,28 @@ describe('convaiAuth', () => {
     stubCookie('');
     const fetchMock = vi.mocked(fetch);
 
-    const session = await fetchConvaiAuthSession();
-    expect(session).toBeNull();
+    const result = await fetchConvaiAuthSessionResult();
+    expect(result.session).toBeNull();
+    expect(result.reason).toMatch(/CONVAI_AUTH cookie not visible/);
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('accepts decrypt responses that return the auth payload object directly', async () => {
+    vi.stubGlobal('window', { location: { hostname: 'chess.convai.com' } });
+    stubCookie(`${CONVAI_AUTH_COOKIE}=encrypted-auth`);
+    vi.mocked(fetch).mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({
+        email: 'player@convai.com',
+        username: 'Player',
+        apiKey: 'direct-key',
+      }),
+    } as Response);
+
+    const result = await fetchConvaiAuthSessionResult();
+    expect(result.session?.apiKey).toBe('direct-key');
+    expect(result.reason).toBeNull();
   });
 
   it('tracks pending Convai redirect state in sessionStorage', () => {
