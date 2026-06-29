@@ -13,9 +13,12 @@ function makeFaceMesh(): THREE.SkinnedMesh {
   const morphNames = [
     'V_Lip_Open',
     'V_Open',
+    'V_Wide',
     'Mouth_Drop_Lower',
     'Mouth_Down_Lower_L',
     'Mouth_LowerLip_Depress_L',
+    'Mouth_UpperLip_Raise_L',
+    'Mouth_UpperLip_Raise_R',
     'Mouth_Smile_L',
     'Mouth_Smile_R',
     'Mouth_Stretch_L',
@@ -76,7 +79,7 @@ describe('cc4Lipsync Leila jaw-bone', () => {
 
     expect(stats.bodyJawOpen).toBe(0);
     expect(stats.bodyVLipOpen).toBeGreaterThan(0);
-    expect(stats.bodyVLipOpen).toBeLessThanOrEqual(0.52);
+    expect(stats.bodyVLipOpen).toBeLessThanOrEqual(0.62);
     expect(stats.appliedOnBody).toBeGreaterThanOrEqual(8);
     expect(state.jawOpenSmooth).toBeGreaterThan(0.08);
 
@@ -105,6 +108,7 @@ describe('cc4Lipsync Leila jaw-bone', () => {
     const restZ = jaw.rotation.z;
     reapplyCC4JawMotion(state, root, 'Leila');
     expect(jaw.rotation.z).toBeGreaterThan(restZ);
+    expect(jaw.rotation.z - restZ).toBeCloseTo(0.15 * 0.78, 3);
   });
 
   it('keeps teeth hidden when hideOralMeshesAlways is set', () => {
@@ -132,5 +136,33 @@ describe('cc4Lipsync Leila jaw-bone', () => {
 
     applyCC4LipsyncFrame(state, root, frame, 'Leila');
     expect(teeth.morphTargetInfluences![0]).toBe(0);
+  });
+
+  it('caps upper-lip raise and V_Wide on face mesh', () => {
+    const root = new THREE.Group();
+    root.add(makeFaceMesh());
+
+    const state = createCC4LipsyncState();
+    bindCC4LipsyncMeshes(state, root);
+
+    const frame = new Float32Array(52);
+    frame[17] = 0.2;
+    frame[39] = 0.9;
+    frame[40] = 0.9;
+    frame[29] = 0.85;
+    frame[30] = 0.85;
+
+    applyCC4LipsyncFrame(state, root, frame, 'Leila');
+
+    const face = root.children[0] as THREE.SkinnedMesh;
+    const dict = face.morphTargetDictionary!;
+    const upperCap = LIPSYNC_PROFILES.Leila.upperLipRaiseCap ?? 0.35;
+    const wideCap = LIPSYNC_PROFILES.Leila.wideMorphCap ?? 0.28;
+
+    expect(face.morphTargetInfluences![dict.Mouth_UpperLip_Raise_L]).toBeLessThanOrEqual(upperCap);
+    expect(face.morphTargetInfluences![dict.Mouth_UpperLip_Raise_R]).toBeLessThanOrEqual(upperCap);
+    expect(face.morphTargetInfluences![dict.V_Wide]).toBeLessThanOrEqual(wideCap);
+    expect(face.morphTargetInfluences![dict.Mouth_UpperLip_Raise_L]).toBeGreaterThan(0);
+    expect(face.morphTargetInfluences![dict.V_Wide]).toBeGreaterThan(0);
   });
 });

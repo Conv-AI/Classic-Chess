@@ -45,8 +45,20 @@ export type LipsyncProfile = {
   hideOralMeshesAlways?: boolean;
   /** Max jaw bone Z rotation when jawOpenSmooth=1 (Leila portrait). */
   jawBoneMaxZ?: number;
-  /** Minimum V_Lip_Open when jaw is active (thin-lip heads). */
+  /** Minimum V_Lip_Open when jaw is active (thick-lip heads). */
   lipOpenMin?: number;
+  /** Per-profile ARKit frame lerp (default LIPSYNC_LERP_FACTOR). */
+  lerpFactor?: number;
+  /** Multiplier for synthetic lower-lip drive in skipVOpen path. */
+  lowerLipDrive?: number;
+  /** Allow Mouth_UpperLip_Raise_L/R on face (capped by upperLipRaiseCap). */
+  allowUpperLipRaise?: boolean;
+  /** Max influence for upper-lip raise morphs on face mesh. */
+  upperLipRaiseCap?: number;
+  /** Allow V_Wide on face (capped by wideMorphCap). */
+  wideMorphCap?: number;
+  /** Post-accum multiplier for mouth morph weights (clamped to 1). */
+  mouthExpressiveness?: number;
 };
 
 /** Leila: block nose-adjacent morphs on face; allow smile/stretch/press/drop/V_Lip_Open. */
@@ -57,10 +69,14 @@ function isFaceMorphBlocked(name: string, profile: LipsyncProfile): boolean {
   if (/^Nose_/i.test(name)) return true;
   if (/^Cheek_/i.test(name)) return true;
   if (/^Mouth_Funnel_/i.test(name)) return true;
-  if (/^Mouth_UpperLip_/i.test(name)) return true;
+  if (/^Mouth_UpperLip_/i.test(name)) {
+    if (profile.allowUpperLipRaise && /^Mouth_UpperLip_Raise_[LR]$/i.test(name)) return false;
+    return true;
+  }
   if (/^Mouth_Up_Upper_/i.test(name)) return true;
   if (name === 'Mouth_Down') return true;
   if (/^Mouth_Cheek_/i.test(name)) return true;
+  if (name === 'V_Wide' && profile.wideMorphCap !== undefined) return false;
   if (name === 'V_Wide') return true;
   if (/^Mouth_Shrug_/i.test(name)) return true;
   if (/^Tongue_/i.test(name)) return true;
@@ -76,21 +92,27 @@ export const LIPSYNC_PROFILES: Record<string, LipsyncProfile> = {
     overall: 1.0,
     jawMorph: 0,
     jawBone: 1.0,
-    jawBoneSmooth: 0.65,
-    jawBoneMaxZ: 0.62,
-    openVisemes: 1.35,
-    wideVisemes: 0.55,
+    jawBoneSmooth: 0.72,
+    jawBoneMaxZ: 0.78,
+    openVisemes: 1.65,
+    wideVisemes: 0.8,
     smileFrown: 0.55,
-    pressPucker: 0.55,
+    pressPucker: 0.7,
     skipCorrectives: true,
     hideOralUntilOpen: true,
     hideOralMeshesAlways: true,
     skipVOpen: true,
     faceMorphBlocklist: true,
-    lipOpenGain: 1.75,
-    lipOpenCap: 0.52,
-    lipOpenMin: 0.22,
+    lipOpenGain: 2.3,
+    lipOpenCap: 0.62,
+    lipOpenMin: 0.3,
     blockMouthClose: true,
+    lerpFactor: 0.9,
+    lowerLipDrive: 1.25,
+    allowUpperLipRaise: true,
+    upperLipRaiseCap: 0.35,
+    wideMorphCap: 0.28,
+    mouthExpressiveness: 1.15,
   },
 };
 
@@ -230,13 +252,14 @@ function resetPortraitNeutralMorphs(root: THREE.Object3D): void {
   zeroNoseMorphsOnFace(root);
 }
 
-function lerpFrame(state: CC4LipsyncState, target: Float32Array): Float32Array {
+function lerpFrame(state: CC4LipsyncState, target: Float32Array, profile: LipsyncProfile): Float32Array {
+  const lerp = profile.lerpFactor ?? LIPSYNC_LERP_FACTOR;
   if (!state.smoothedFrame || state.smoothedFrame.length !== target.length) {
     state.smoothedFrame = new Float32Array(target);
     return state.smoothedFrame;
   }
   for (let i = 0; i < target.length; i++) {
-    const lerped = state.smoothedFrame[i] + (target[i] - state.smoothedFrame[i]) * LIPSYNC_LERP_FACTOR;
+    const lerped = state.smoothedFrame[i] + (target[i] - state.smoothedFrame[i]) * lerp;
     state.smoothedFrame[i] = Math.max(0, Math.min(1, lerped));
   }
   return state.smoothedFrame;
@@ -320,17 +343,36 @@ function buildMorphAccum(frame: Float32Array, profile: LipsyncProfile): Record<s
     );
     if (rawJaw > 0.025 && min > 0) lipOpen = Math.max(lipOpen, min);
     accum.V_Lip_Open = lipOpen;
-    accum.Mouth_Drop_Lower = Math.max(accum.Mouth_Drop_Lower ?? 0, openAmount * 1.0);
-    accum.Mouth_Down_Lower_L = Math.max(accum.Mouth_Down_Lower_L ?? 0, openAmount * 0.58);
-    accum.Mouth_Down_Lower_R = Math.max(accum.Mouth_Down_Lower_R ?? 0, openAmount * 0.58);
-    accum.Mouth_LowerLip_Depress_L = Math.max(accum.Mouth_LowerLip_Depress_L ?? 0, openAmount * 0.52);
-    accum.Mouth_LowerLip_Depress_R = Math.max(accum.Mouth_LowerLip_Depress_R ?? 0, openAmount * 0.52);
+    const lipDrive = profile.lowerLipDrive ?? 1;
+    accum.Mouth_Drop_Lower = Math.max(accum.Mouth_Drop_Lower ?? 0, openAmount * 1.2 * lipDrive);
+    accum.Mouth_Down_Lower_L = Math.max(accum.Mouth_Down_Lower_L ?? 0, openAmount * 0.72 * lipDrive);
+    accum.Mouth_Down_Lower_R = Math.max(accum.Mouth_Down_Lower_R ?? 0, openAmount * 0.72 * lipDrive);
+    accum.Mouth_LowerLip_Depress_L = Math.max(accum.Mouth_LowerLip_Depress_L ?? 0, openAmount * 0.68 * lipDrive);
+    accum.Mouth_LowerLip_Depress_R = Math.max(accum.Mouth_LowerLip_Depress_R ?? 0, openAmount * 0.68 * lipDrive);
   } else {
     accum.V_Open = Math.max(accum.V_Open ?? 0, jawOpen);
     accum.V_Lip_Open = Math.max(accum.V_Lip_Open ?? 0, jawOpen * (profile.hideOralUntilOpen ? 0.9 : 0.82));
   }
 
+  if (profile.mouthExpressiveness && profile.mouthExpressiveness !== 1) {
+    const express = profile.mouthExpressiveness;
+    for (const name of Object.keys(accum)) {
+      if (!isMouthMorphName(name)) continue;
+      accum[name] = Math.min(1, accum[name] * express);
+    }
+  }
+
   return accum;
+}
+
+function capFaceMorphValue(name: string, value: number, profile: LipsyncProfile): number {
+  if (/^Mouth_UpperLip_Raise_[LR]$/i.test(name) && profile.allowUpperLipRaise) {
+    return Math.min(value, profile.upperLipRaiseCap ?? 0.35);
+  }
+  if (name === 'V_Wide' && profile.wideMorphCap !== undefined) {
+    return Math.min(value, profile.wideMorphCap);
+  }
+  return value;
 }
 
 export type CC4LipsyncApplyStats = {
@@ -377,8 +419,8 @@ function applyAccumToMeshes(
       if (isFaceMesh && isFaceMorphBlocked(name, profile)) continue;
       const morphIndex = dict[name];
       if (morphIndex === undefined) continue;
-      let applied = value;
-      if (isTeethMesh) applied = Math.min(TEETH_OPEN_CAP, value * TEETH_MORPH_ATTENUATION);
+      let applied = isFaceMesh ? capFaceMorphValue(name, value, profile) : value;
+      if (isTeethMesh) applied = Math.min(TEETH_OPEN_CAP, applied * TEETH_MORPH_ATTENUATION);
       infl[morphIndex] = applied;
       if (isFaceMesh) {
         appliedOnBody++;
@@ -458,7 +500,7 @@ export function applyCC4LipsyncFrame(
 ): CC4LipsyncApplyStats {
   const profile = LIPSYNC_PROFILES[assetName] ?? LIPSYNC_PROFILES.Leila;
   resetPortraitNeutralMorphs(root);
-  const smoothed = lerpFrame(state, frame);
+  const smoothed = lerpFrame(state, frame, profile);
   state.latestFrame = smoothed;
   state.isActive = true;
 
