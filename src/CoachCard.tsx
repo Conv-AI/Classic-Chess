@@ -7,6 +7,7 @@ import { debugLog } from './debugLog';
 import ReallusionCharacter from './ReallusionCharacter';
 import PortraitScene from './PortraitScene';
 import Tooltip from './Tooltip';
+import { isMobilePortrait } from './isMobilePortrait';
 import { playUiSound, unlockUiAudio } from './uiSounds';
 
 const DEFAULT_CHARACTER_ASSET_BASE = import.meta.env.BASE_URL;
@@ -21,7 +22,7 @@ const FRAMING_BY_ASSET: Record<string, {
   Vincent: { topInsetWorld: 0.035, portraitCropBias: 0.02, horizontalOffset: 0.07 },
   Tyler: { topInsetWorld: 0.035, portraitCropBias: 0.02, horizontalOffset: 0.07 },
   Cassandra: { topInsetWorld: 0.035, portraitCropBias: 0.02, horizontalOffset: 0 },
-  Danielle: { topInsetWorld: 0.02, portraitCropBias: 0.01, horizontalOffset: 0 },
+  Leila: { topInsetWorld: 0.005, portraitCropBias: 0.1, horizontalOffset: 0 },
 };
 
 type Props = {
@@ -76,7 +77,7 @@ export default function CoachCard({
 }: Props) {
   const modelUrl = assetUrl(coach.modelFile);
   const idleUrl = assetUrl(coach.idleFile);
-  const framing = FRAMING_BY_ASSET[coach.assetName] ?? FRAMING_BY_ASSET.Danielle;
+  const framing = FRAMING_BY_ASSET[coach.assetName] ?? FRAMING_BY_ASSET.Leila;
   const lineRef = useRef<HTMLParagraphElement>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
   const characterWindowRef = useRef<HTMLDivElement>(null);
@@ -84,10 +85,7 @@ export default function CoachCard({
   const [characterReady, setCharacterReady] = useState(false);
   const [characterFailed, setCharacterFailed] = useState(false);
   const [canvasDpr, setCanvasDpr] = useState(() => Math.min(Math.max(window.devicePixelRatio || 1, 2), 2.5));
-  const [isMobileCanvas] = useState(() => (
-    typeof window !== 'undefined' &&
-    window.matchMedia('(pointer: coarse), (max-width: 700px)').matches
-  ));
+  const [isMobileCanvas] = useState(() => isMobilePortrait());
   const [displayedLine, setDisplayedLine] = useState('');
   const revealTargetRef = useRef('');
   const revealShownRef = useRef('');
@@ -98,7 +96,7 @@ export default function CoachCard({
 
   useEffect(() => chessConvai.onStatus((s) => {
     const now = Date.now();
-    if (s.speaking) suppressThinkingUntilRef.current = now + 650;
+    if (s.speaking) suppressThinkingUntilRef.current = now + 300;
     setMicEnabled(s.micEnabled);
     setBotSpeaking(s.speaking);
     setBotThinking(s.thinking && !s.speaking && now >= suppressThinkingUntilRef.current);
@@ -239,7 +237,7 @@ export default function CoachCard({
             gl.setClearColor(coach.bgColor, 1);
           }}
         >
-          <PortraitScene bgColor={coach.bgColor} enablePostProcessing={!isMobileCanvas}>
+          <PortraitScene bgColor={coach.bgColor} enablePostProcessing={!isMobileCanvas} enableEnvironment={!isMobileCanvas}>
             <CharacterErrorBoundary resetKey={characterResetKey} onError={handleCharacterError}>
               <Suspense fallback={null}>
                 <ReallusionCharacter
@@ -247,6 +245,7 @@ export default function CoachCard({
                   assetName={coach.assetName}
                   charUrl={modelUrl}
                   animUrl={idleUrl}
+                  mobileSafe={isMobileCanvas}
                   onReady={handleCharacterReady}
                   framing={{
                     cameraZ: 0.9,

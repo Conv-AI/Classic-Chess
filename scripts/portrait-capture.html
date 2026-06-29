@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Portrait Capture</title>
+  <style>
+    html, body { margin: 0; background: #111; }
+    canvas { display: block; }
+  </style>
+</head>
+<body>
+  <canvas id="portrait" width="1200" height="1600"></canvas>
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "/vendor/three/build/three.module.js",
+      "three/addons/": "/vendor/three/examples/jsm/"
+    }
+  }
+  </script>
+  <script type="module">
+    import * as THREE from 'three';
+    import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+    import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
+
+    const params = new URLSearchParams(location.search);
+    const coachId = params.get('coach') || 'leila';
+    const configs = {
+      leila: {
+        model: '/cc-female.glb',
+        bg: '#e8dde5',
+        portraitCropBias: -0.01,
+        topInsetWorld: 0.07,
+        horizontalOffset: 0,
+        lookAtY: 1.48,
+        cameraZ: 0.82,
+        exposure: 1.14,
+      },
+    };
+    const config = configs[coachId];
+    if (!config) throw new Error(`Unknown coach: ${coachId}`);
+
+    const WIDTH = 1200;
+    const HEIGHT = 1600;
+    const CAMERA_Z = config.cameraZ ?? 0.9;
+    const FOV = 36;
+    const LOOK_AT_Y = config.lookAtY ?? 1.4;
+
+    const canvas = document.getElementById('portrait');
+    const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, preserveDrawingBuffer: true });
+    renderer.setSize(WIDTH, HEIGHT, false);
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = config.exposure ?? 0.94;
+
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(config.bg);
+    scene.add(new THREE.HemisphereLight('#f2eee8', '#8a847c', 0.48));
+    const key = new THREE.DirectionalLight('#fff8f2', 0.88);
+    key.position.set(0.4, 1.9, 1.2);
+    scene.add(key);
+    const fill = new THREE.DirectionalLight('#f0ebe4', 0.42);
+    fill.position.set(-1.0, 1.2, 1.0);
+    scene.add(fill);
+    const rim = new THREE.DirectionalLight('#e8eef5', 0.22);
+    rim.position.set(0, 1.5, -1.6);
+    scene.add(rim);
+    const face = new THREE.PointLight('#fff6ee', 0.35, 4);
+    face.position.set(0, 1.5, 0.55);
+    scene.add(face);
+
+    const camera = new THREE.PerspectiveCamera(FOV, WIDTH / HEIGHT, 0.01, 20);
+    camera.position.set(0, LOOK_AT_Y, CAMERA_Z);
+    camera.lookAt(0, LOOK_AT_Y, 0);
+
+    const dracoLoader = new DRACOLoader();
+    dracoLoader.setDecoderPath('/vendor/three/examples/jsm/libs/draco/gltf/');
+    const loader = new GLTFLoader();
+    loader.setDRACOLoader(dracoLoader);
+
+    function frameCharacter(root) {
+      root.position.set(0, 0, 0);
+      root.rotation.set(0, 0, 0);
+      root.scale.setScalar(1);
+      root.updateMatrixWorld(true);
+      const box = new THREE.Box3().setFromObject(root);
+      const visibleHalfHeight = Math.tan((FOV * Math.PI) / 360) * CAMERA_Z;
+      const visibleTop = LOOK_AT_Y + visibleHalfHeight;
+      const targetTop = visibleTop - config.topInsetWorld;
+      root.position.y = targetTop - box.max.y + config.portraitCropBias;
+      root.position.x = config.horizontalOffset;
+      root.updateMatrixWorld(true);
+    }
+
+    try {
+      const gltf = await loader.loadAsync(config.model);
+      gltf.scene.traverse((child) => {
+        const mesh = child;
+        if (!mesh.isMesh) return;
+        const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+        for (const material of materials) {
+          if (!material) continue;
+          if ('envMapIntensity' in material) material.envMapIntensity = 0.2;
+          if ('roughness' in material && material.roughness > 0.72) material.roughness = 0.72;
+        }
+      });
+      frameCharacter(gltf.scene);
+      scene.add(gltf.scene);
+      renderer.render(scene, camera);
+      window.__PORTRAIT_DATA_URL__ = canvas.toDataURL('image/png');
+      window.__PORTRAIT_READY__ = true;
+    } catch (err) {
+      window.__PORTRAIT_ERROR__ = String(err?.message || err);
+      window.__PORTRAIT_READY__ = true;
+    }
+  </script>
+</body>
+</html>

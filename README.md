@@ -4,11 +4,11 @@ Classic Chess is a React, TypeScript, Vite chess coaching app. It combines `ches
 
 ## Features
 
-- Optional **Google sign-in** for Convai long-term memory (guest play unchanged)
-- **Quick Play** against Magnus, Sofia, Arjun, Leila, or custom coaches you create — **Sofia** is the default coach
+- Optional **Google sign-in** for Convai long-term memory — **published for external Google accounts** (guest play unchanged; see [docs/google-convai-memory-tutorial.md](docs/google-convai-memory-tutorial.md))
+- **Quick Play** against Magnus, Sofia, Arjun, Leila, or custom coaches you create — **Leila** is the default coach
 - **Menu coach headshots** — circular portrait avatars per coach (`public/coach-portraits/`), with sharp 192×192 thumbnails for the picker
 - **3D coach portrait** — softer studio lighting, adaptive canvas DPR, optional bloom/vignette post-processing (`PortraitScene`)
-- **Portrait animation polish** — idle head/eye bones locked forward, procedural blinking, mouth-only ARKit lipsync (no brow twitch), tuned teeth visibility
+- **Portrait animation polish** — idle bone locks (root/hip/spine/jaw/eyes), procedural blinking, per-asset CC4 lipsync profiles, jaw-bone speech on Leila (`cc-female.glb`), unified 60fps blendshape playback synced to TTS
 - **AI coach speech** through Convai with two coaching strategies:
   - **Coach mode** (default) — Convai's LLM sees full board context every turn and decides whether to speak (`run_llm: 'auto'`)
   - **Game mode** — local heuristics in `analyzeCoachMoveContext()` pick teaching moments; the coach only speaks on captures, tactics, king safety, and similar events
@@ -19,7 +19,7 @@ Classic Chess is a React, TypeScript, Vite chess coaching app. It combines `ches
 - **UI sounds** — gentle chimes for navigation, confirm, toggle, send, and tap actions (`src/uiSounds.ts`)
 - **API key management** — `VITE_CONVAI_API_KEY` in `.env` or a key saved in the browser; modal with Convai signup steps when no key is detected; masked key badge on the menu (`09***`)
 - **Custom coach creator** — Convai Core API with language-filtered voices and verified model list (default: `gemini-2.5-flash-lite`)
-- **Board vision** (experimental) — `VITE_CONVAI_BOARD_VISION=true` publishes a low-FPS board canvas stream to the Convai room
+- **Board vision** — chess board canvas is published via Convai Vision Dynamic Context (`@convai/web-sdk@1.6.0-beta.1`) so the coach sees the position alongside text context
 - Microphone toggle for voice chat, off by default
 - Puzzle mode with hints, five-puzzle groups, and mistake review
 - Saved games and replay
@@ -40,7 +40,7 @@ git lfs install
 git lfs pull
 ```
 
-Files: `magnus.glb`, `sofia.glb`, `arjun.glb`, `leila.glb` plus matching `*-animations.glb` idle clips. The app loads them from `public/` by default (no external CDN required).
+Files: `magnus.glb`, `sofia.glb`, `arjun.glb`, `cc-female.glb` (Leila coach) plus matching `*-animations.glb` idle clips. The app loads them from `public/` by default (no external CDN required).
 
 Menu headshots live in `public/coach-portraits/` (`magnus.png`, `sofia.png`, etc.). The coach picker uses pre-generated `*-thumb.png` files (192×192, Lanczos downscale). After replacing a portrait source image, regenerate thumbs:
 
@@ -69,16 +69,13 @@ npm run test
 npm run portraits:thumbs   # regenerate menu headshot thumbnails after changing coach-portraits/*.png
 ```
 
-Uses `@convai/web-sdk@^1.3.0`.
+Uses `@convai/web-sdk@1.6.0-beta.1`.
 
 ## Environment
 
 ```bash
 # Required for Convai (or add via in-app modal — stored in localStorage)
 VITE_CONVAI_API_KEY=your_key_here
-
-# Optional: publish board DOM as video to Convai room (also enable vision on character in Convai dashboard)
-VITE_CONVAI_BOARD_VISION=true
 
 # Optional: Google sign-in for Convai long-term memory (see docs/google-convai-memory-tutorial.md)
 VITE_GOOGLE_CLIENT_ID=your-web-client-id.apps.googleusercontent.com
@@ -103,7 +100,12 @@ Recommended LLM for live coaching: **Gemini 2.5 Flash Lite** or **Claude 4 Sonne
 | [src/MenuScreen.tsx](src/MenuScreen.tsx) | Menu, coach/difficulty pickers with headshot avatars, coaching control toggle, API key badge |
 | [src/CoachCard.tsx](src/CoachCard.tsx) | Avatar card, `PortraitScene` canvas, adaptive DPR, chat toggle, mic slot, optional dataset button |
 | [src/PortraitScene.tsx](src/PortraitScene.tsx) | Portrait lighting, environment map, optional bloom/vignette post-FX |
-| [src/ReallusionCharacter.tsx](src/ReallusionCharacter.tsx) | GLB avatar, ARKit→CC4 lipsync, idle sanitization, procedural blink |
+| [src/ReallusionCharacter.tsx](src/ReallusionCharacter.tsx) | GLB avatar, ARKit→CC4 lipsync, idle sanitization, procedural blink, jaw-bone motion |
+| [src/cc4Lipsync.ts](src/cc4Lipsync.ts) | Per-asset lipsync profiles, morph mapping, Leila thin-lip / nostril-safe tuning |
+| [src/cc4Correctives.ts](src/cc4Correctives.ts) | CC4 C_* corrective morph products (optional per profile) |
+| [src/cc4TeethMotion.ts](src/cc4TeethMotion.ts) | Jaw / teeth / tongue bone motion (`jawOnly` mode for Leila) |
+| [src/convaiLipsyncPlayer.ts](src/convaiLipsyncPlayer.ts) | Single-clock 60fps blendshape consume loop (Convai reference pattern) |
+| [src/isMobilePortrait.ts](src/isMobilePortrait.ts) | Mobile GLES portrait rendering guards |
 | [src/portraitBlink.ts](src/portraitBlink.ts) | Procedural eye-blink morph driver for idle + speech |
 | [src/sanitizeIdleClip.ts](src/sanitizeIdleClip.ts) | Portrait-safe idle clip cleanup (bone root, head/eye lock) |
 | [src/MicButton.tsx](src/MicButton.tsx) | Shared Convai microphone toggle |
@@ -126,10 +128,12 @@ Recommended LLM for live coaching: **Gemini 2.5 Flash Lite** or **Claude 4 Sonne
 
 ## Portrait & Lipsync
 
-- **Idle animation** — `sanitizePortraitIdleClip()` locks `CC_Base_Head` and eye bones to frame 0, strips drifting eye translation, and locks `CC_Base_BoneRoot` X/Z so the coach faces the camera without wandering eyes.
+- **Idle animation** — `sanitizePortraitIdleClip()` locks `CC_Base_BoneRoot`, hip, spine, head, jaw, and eye bones; strips drifting eye translation so the coach faces the camera without hip sway or nostril flicker.
 - **Blinking** — procedural `Eye_Blink_L/R` morphs on all face meshes (`portraitBlink.ts`); starts after the portrait is framed (not during GLB load).
-- **Lipsync** — ARKit frames map to CC4 mouth morphs only; brow/squint/cheek channels are zeroed each frame so TTS noise does not twitch the upper face. Teeth morphs and jaw-driven teeth motion are attenuated for a subtler smile line.
-- **Rendering** — `PortraitScene` uses soft directional lights, `apartment` environment, ACES tone mapping (exposure 0.94), and light bloom/vignette on desktop. `CoachCard` raises canvas DPR up to 3× based on portrait window size.
+- **Lipsync playback** — `convaiLipsyncPlayer.ts` drives ARKit frames through one 60fps `consumeFrames` clock (reference `useLipsyncPlayer` pattern), avoiding dual `getFrameAtTime` + tail paths that desynced mouth from audio.
+- **CC4 mapping** — `cc4Lipsync.ts` maps ARKit to CC4 mouth morphs with per-asset `LIPSYNC_PROFILES`; brow/squint/cheek channels attenuated so TTS noise does not twitch the upper face.
+- **Leila (`cc-female.glb`)** — jaw-bone rotation (not face `Jaw_Open` morphs), hidden oral meshes, blocked nose/funnel/tongue morphs on the face mesh, boosted lower-lip / `V_Lip_Open` drive for thin lips.
+- **Rendering** — `PortraitScene` uses soft directional lights, `apartment` environment, ACES tone mapping (exposure 0.94), and light bloom/vignette on desktop. `CoachCard` raises canvas DPR up to 3× based on portrait window size. Mobile uses material downgrade via `isMobilePortrait()`.
 
 ## Coaching Control
 
@@ -143,7 +147,7 @@ Puzzles and chat always use explicit scripted prompts.
 
 ### Coach move timing
 
-The coach applies her Stockfish move **only after** TTS finishes. `runCoachTurn` uses `waitForFullSpeech: true` and `waitUntilSpeechFinished()` (SDK/lipsync signals plus a word-count estimate fallback) so moves follow speech, not the other way around.
+The coach applies her Stockfish move **only after** TTS finishes. `runCoachTurn` uses `waitForFullSpeech: true` and `waitUntilSpeechFinished()` (SDK speaking state, blendshape queue, stuck-audio detection, and queue `getTimeLeftMs` / `isAllFramesConsumed`) so moves follow speech without a multi-second gap or premature cut-off. The status line avoids a post-speech “thinking” flash by holding `recentCoachSpeech` until the Convai turn completes.
 
 ### Welcome lines
 
@@ -165,6 +169,10 @@ Opening greetings use varied casual lines from `buildWelcomeDynamicInfo()`. Duri
 2. Voices and languages load automatically; the voice list **filters to the selected language**.
 3. Default model: `gemini-2.5-flash-lite` (Convai-supported model codes only).
 4. On success, the coach is saved to localStorage and appears in the menu coach picker (Leila portrait placeholder by default).
+
+## Google Sign-In (production)
+
+The OAuth consent screen is configured as **External** and **published**, so any Google account can sign in (not limited to a Workspace org or manual test-user list). Users may still see Google's unverified-app warning until Google verification completes; they can proceed via **Advanced → Go to Classic Chess (unsafe)**. See [docs/google-convai-memory-tutorial.md](docs/google-convai-memory-tutorial.md) for Cloud Console setup and troubleshooting.
 
 ## Menu Coach Portraits
 

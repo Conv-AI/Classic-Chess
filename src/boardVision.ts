@@ -1,10 +1,16 @@
+type VisionSourceHandle = {
+  track: MediaStreamTrack;
+  unpublish: () => Promise<void>;
+  cleanup?: () => void;
+};
+
 import { debugLog } from './debugLog';
 
-const BOARD_VISION_ENABLED = import.meta.env.VITE_CONVAI_BOARD_VISION === 'true';
 const DEFAULT_BOARD_SELECTOR = '.game-stage .chess-board';
 const FALLBACK_BOARD_SELECTOR = '.chess-board';
-const DEFAULT_FPS = 2;
+const VISION_FPS = 1;
 const LIVE_REDRAW_MS = 500;
+const STARTING_FEN = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
 
 type BoardOrientation = 'w' | 'b';
 
@@ -31,34 +37,17 @@ export type BoardVisionSession = {
 };
 
 export function isBoardVisionEnabled(): boolean {
-  return BOARD_VISION_ENABLED;
+  return true;
 }
 
-/**
- * Experimental: capture the chess board DOM for Convai vision.
- * Requires enableVideo on the Convai client and vision enabled on the character in the dashboard.
- * Web SDK has no sendImage API — vision uses video/screen-share pipelines.
- */
-export async function captureBoardCanvas(selector = '.chess-board'): Promise<HTMLCanvasElement | null> {
-  const boardEl = findBoardElement(selector);
-  if (!boardEl) {
-    debugLog('BoardVision', 'Board element not found');
-    return null;
+function visionErrorMessage(err: unknown): string {
+  if (err instanceof Error) return err.message || err.name;
+  if (typeof err === 'string') return err;
+  try {
+    return JSON.stringify(err);
+  } catch {
+    return String(err);
   }
-
-  const rect = boardEl.getBoundingClientRect();
-  const width = Math.max(1, Math.round(rect.width));
-  const height = Math.max(1, Math.round(rect.height));
-  const canvas = document.createElement('canvas');
-  canvas.width = width;
-  canvas.height = height;
-  const ctx = canvas.getContext('2d');
-  if (!ctx) return null;
-
-  const rendered = renderBoardFromDom(boardEl, ctx, width, height);
-  if (!rendered) return null;
-  debugLog('BoardVision', `Captured board ${width}x${height}`);
-  return canvas;
 }
 
 function findBoardElement(selector = DEFAULT_BOARD_SELECTOR): HTMLElement | null {
@@ -68,7 +57,7 @@ function findBoardElement(selector = DEFAULT_BOARD_SELECTOR): HTMLElement | null
   ) as HTMLElement | null;
 }
 
-async function waitForBoardElement(selector = DEFAULT_BOARD_SELECTOR, timeoutMs = 1500): Promise<HTMLElement | null> {
+async function waitForBoardElement(selector = DEFAULT_BOARD_SELECTOR, timeoutMs = 8000): Promise<HTMLElement | null> {
   const start = Date.now();
   let boardEl = findBoardElement(selector);
   while (!boardEl && Date.now() - start < timeoutMs) {
@@ -78,10 +67,9 @@ async function waitForBoardElement(selector = DEFAULT_BOARD_SELECTOR, timeoutMs 
   return boardEl;
 }
 
-function sizeCanvasForBoard(canvas: HTMLCanvasElement, boardEl: HTMLElement): { width: number; height: number } {
-  const rect = boardEl.getBoundingClientRect();
-  const width = Math.max(1, Math.round(rect.width));
-  const height = Math.max(1, Math.round(rect.height));
+function sizeCanvasForBoard(canvas: HTMLCanvasElement, boardEl?: HTMLElement | null): { width: number; height: number } {
+  const width = Math.max(320, Math.min(640, Math.round(boardEl?.getBoundingClientRect().width || 480)));
+  const height = width;
   if (canvas.width !== width) canvas.width = width;
   if (canvas.height !== height) canvas.height = height;
   return { width, height };
@@ -196,27 +184,43 @@ function renderBoardFromFen(
   return true;
 }
 
-export function createBoardMediaStream(canvas: HTMLCanvasElement, fps = 1): MediaStream | null {
-  try {
-    return canvas.captureStream(fps);
-  } catch (err) {
-    debugLog('BoardVision', 'captureStream failed', err);
-    return null;
+async function waitForRoomReady(client: any, timeoutMs = 5000): Promise<boolean> {
+  const room = client?.room;
+  if (!room) return true;
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const state = room.state;
+    if (state === 'connected' && room.localParticipant) return true;
+    await new Promise((resolve) => window.setTimeout(resolve, 100));
   }
+  return room.state === 'connected' && Boolean(room.localParticipant);
+}
+
+function primeCanvasTrack(canvas: HTMLCanvasElement): void {
+  const stream = canvas.captureStream?.(VISION_FPS);
+  const track = stream?.getVideoTracks?.()[0] as CanvasCaptureMediaStreamTrack | undefined;
+  track?.requestFrame?.();
 }
 
 /**
- * Publish a live board canvas track to the Convai LiveKit room.
- * The canvas is redrawn while connected, so the published track follows moves
- * instead of freezing at the initial DOM snapshot.
+ * Publish a live chess-board canvas via Convai Vision Dynamic Context.
+ * Requires enableVideo + visionInputConfig on the client and vision enabled on the character dashboard.
  */
-export async function publishBoardVisionTrack(client: any, selector = DEFAULT_BOARD_SELECTOR): Promise<BoardVisionSession | null> {
-  if (!BOARD_VISION_ENABLED) return null;
+export async function publishBoardVisionCanvas(
+  client: any,
+  selector = DEFAULT_BOARD_SELECTOR,
+  initialFen = STARTING_FEN,
+): Promise<BoardVisionSession | null> {
+  const videoControls = client?.videoControls;
+  const publishCanvas = videoControls?.publishCanvas;
+  if (typeof publishCanvas !== 'function') {
+    debugLog('BoardVision', 'Client videoControls.publishCanvas is unavailable');
+    return null;
+  }
 
   const boardEl = await waitForBoardElement(selector);
   if (!boardEl) {
-    debugLog('BoardVision', 'Board element not found');
-    return null;
+    debugLog('BoardVision', 'Board element not found — will render from FEN fallback');
   }
 
   const canvas = document.createElement('canvas');
@@ -224,38 +228,34 @@ export async function publishBoardVisionTrack(client: any, selector = DEFAULT_BO
   if (!ctx) return null;
 
   const { width, height } = sizeCanvasForBoard(canvas, boardEl);
-  if (!renderBoardFromDom(boardEl, ctx, width, height)) return null;
-
-  const stream = createBoardMediaStream(canvas, DEFAULT_FPS);
-  if (!stream) return null;
-
-  const room = client?.room;
-  const localParticipant = room?.localParticipant;
-  if (!localParticipant?.publishTrack) {
-    debugLog('BoardVision', 'Room does not expose publishTrack — vision spike needs manual screen-share test');
-    stream.getTracks().forEach((track) => track.stop());
+  const renderedFromDom = boardEl ? renderBoardFromDom(boardEl, ctx, width, height) : false;
+  if (!renderedFromDom && !renderBoardFromFen(initialFen, ctx, width, height, 'w')) {
+    debugLog('BoardVision', 'Could not render board snapshot');
     return null;
   }
 
-  const videoTrack = stream.getVideoTracks()[0];
-  if (!videoTrack) return null;
+  primeCanvasTrack(canvas);
 
+  let visionHandle: VisionSourceHandle | null = null;
   let published = false;
-  let latestFen = '';
+  let latestFen = renderedFromDom ? '' : initialFen;
   let latestOrientation: BoardOrientation = 'w';
   let redrawTimer: ReturnType<typeof window.setInterval> | null = null;
 
   const requestFrame = () => {
-    (videoTrack as CanvasCaptureMediaStreamTrack & { requestFrame?: () => void }).requestFrame?.();
+    const track = visionHandle?.track as CanvasCaptureMediaStreamTrack & { requestFrame?: () => void };
+    track?.requestFrame?.();
   };
 
   const refresh = () => {
     const currentBoard = findBoardElement(selector);
-    if (!currentBoard) return false;
+    if (!currentBoard && !latestFen) return false;
     const nextSize = sizeCanvasForBoard(canvas, currentBoard);
     const rendered = latestFen
       ? renderBoardFromFen(latestFen, ctx, nextSize.width, nextSize.height, latestOrientation)
-      : renderBoardFromDom(currentBoard, ctx, nextSize.width, nextSize.height);
+      : currentBoard
+        ? renderBoardFromDom(currentBoard, ctx, nextSize.width, nextSize.height)
+        : false;
     if (rendered) requestFrame();
     return rendered;
   };
@@ -271,30 +271,71 @@ export async function publishBoardVisionTrack(client: any, selector = DEFAULT_BO
     return rendered;
   };
 
-  const stop = () => {
+  const stop = async () => {
     if (redrawTimer) {
       window.clearInterval(redrawTimer);
       redrawTimer = null;
     }
-    try { localParticipant.unpublishTrack?.(videoTrack); } catch {}
-    stream.getTracks().forEach((track) => track.stop());
+    if (visionHandle) {
+      try {
+        await visionHandle.unpublish();
+      } catch {}
+      try {
+        visionHandle.cleanup?.();
+      } catch {}
+      visionHandle = null;
+    }
     published = false;
   };
 
+  await waitForRoomReady(client);
+
   try {
-    await localParticipant.publishTrack(videoTrack, { name: 'chess-board', simulcast: false });
+    visionHandle = await publishCanvas.call(videoControls, canvas, {
+      source: 'canvas',
+      name: 'chess-board',
+      fps: VISION_FPS,
+      stopTrackOnUnpublish: true,
+    });
     published = true;
     redrawTimer = window.setInterval(refresh, LIVE_REDRAW_MS);
-    debugLog('BoardVision', `Published live board video track to Convai room (${width}x${height} @ ${DEFAULT_FPS}fps)`);
+    debugLog('BoardVision', `Published chess-board canvas vision (${width}x${height} @ ${VISION_FPS}fps)`);
     return {
       refresh,
       updateFromFen,
-      stop,
+      stop: () => { void stop(); },
       isPublished: () => published,
     };
   } catch (err) {
-    debugLog('BoardVision', 'publishTrack failed', err);
-    stream.getTracks().forEach((track) => track.stop());
+    debugLog('BoardVision', `publishCanvas failed: ${visionErrorMessage(err)}`);
+    await stop();
     return null;
   }
 }
+
+/** Retry publishing board vision until the board is ready or attempts are exhausted. */
+export async function ensureBoardVisionCanvas(
+  client: any,
+  existing: BoardVisionSession | null | undefined,
+  options: { fen?: string; attempts?: number; delayMs?: number } = {},
+): Promise<BoardVisionSession | null> {
+  if (existing?.isPublished()) return existing;
+
+  const attempts = options.attempts ?? 6;
+  const delayMs = options.delayMs ?? 600;
+  let last: BoardVisionSession | null = existing ?? null;
+
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    if (last?.isPublished()) return last;
+    if (attempt > 0) {
+      await new Promise((resolve) => window.setTimeout(resolve, delayMs * attempt));
+    }
+    last = await publishBoardVisionCanvas(client, undefined, options.fen);
+    if (last?.isPublished()) return last;
+  }
+
+  return last;
+}
+
+/** @deprecated Use publishBoardVisionCanvas */
+export const publishBoardVisionTrack = publishBoardVisionCanvas;

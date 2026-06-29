@@ -7,7 +7,7 @@ import AuthButton from './AuthButton';
 import { authUserToIdentity, fetchAuthUser, getCachedAuthUser, resolveConvaiConnectionEndUserId, type AuthUser, type UserIdentity } from './auth';
 import ApiKeyModal from './ApiKeyModal';
 import ChatDrawer from './ChatDrawer';
-import { getCoach, getDifficulty, type CoachId, type DifficultyConfig, type DifficultyId } from './coachConfig';
+import { getCoach, getDifficulty, DEFAULT_COACH, type CoachId, type DifficultyConfig, type DifficultyId } from './coachConfig';
 import { hasConvaiApiKey as hasConvaiApiKeyConfigured, createCustomCoach, DEFAULT_MODEL, fetchLanguages, fetchVoices, filterVoicesForLanguage, MODEL_OPTIONS, pickDefaultVoice, type LanguageOption, type VoiceOption } from './convaiCoreApi';
 import { hasConvaiApiKey } from './convaiApiKey';
 import { saveCustomCoach } from './customCoaches';
@@ -218,7 +218,7 @@ function App() {
   useWheelScrollBridge();
 
   const [screen, setScreen] = useState<Screen>('menu');
-  const [coachId, setCoachId] = useState<CoachId>('sofia');
+  const [coachId, setCoachId] = useState<CoachId>(DEFAULT_COACH.id);
   const [difficultyId, setDifficultyId] = useState<DifficultyId>('intermediate');
   const [coachingControlMode, setCoachingControlModeState] = useState<CoachingControlMode>(() => loadCoachingControlMode());
   const [loadingProgress, setLoadingProgress] = useState(0);
@@ -668,9 +668,10 @@ function ChessGame({
       return undefined;
     }
     if (!recentCoachSpeech) return undefined;
-    const timer = window.setTimeout(() => setRecentCoachSpeech(false), 650);
+    if (convaiStatus.convaiTurnInFlight) return undefined;
+    const timer = window.setTimeout(() => setRecentCoachSpeech(false), 200);
     return () => window.clearTimeout(timer);
-  }, [convaiStatus.speaking, recentCoachSpeech]);
+  }, [convaiStatus.speaking, convaiStatus.convaiTurnInFlight, recentCoachSpeech]);
 
   useEffect(() => {
     if (!isCovered || welcomeSpokenRef.current) return;
@@ -932,7 +933,7 @@ function ChessGame({
 
     if (coachingControlMode === 'coach') {
       debugLog('makeCoachMove', `[coach-decides] dynamic context auto-LLM turn moveNo=${fullMoveNo} fen="${next.fen()}"`);
-      const spoken = await chessConvai.runCoachTurn(coach, dynamicInfo, { runLlm: 'auto', waitForFullSpeech: true, preflightSilence: false, maxWaitMs: 18000 });
+      const spoken = await chessConvai.runCoachTurn(coach, dynamicInfo, { runLlm: 'auto', waitForFullSpeech: true, preflightSilence: true, maxWaitMs: 18000 });
 
       if (DATASET_TOOLS_ENABLED) {
         setLastExchange({
@@ -1064,12 +1065,23 @@ function ChessGame({
     playUiSound('send');
     setChatInput('');
     setCoachResponding(true);
-    const dynamicInfo = buildDynamicCoachInfo(game, null, lastMove ? moveRecordToMoveLike(lastMove) : null, coach, difficulty);
+    const dynamicInfo = addStudentContext(
+      buildDynamicCoachInfo(
+        game,
+        null,
+        lastMove ? moveRecordToMoveLike(lastMove) : null,
+        coach,
+        difficulty,
+        history,
+      ),
+      userIdentity,
+    );
     const spoken = await chessConvai.sendUserChat(
       coach,
       difficulty,
       text,
       dynamicInfo,
+      game.fen(),
     );
 
     if (DATASET_TOOLS_ENABLED) {
@@ -1919,6 +1931,7 @@ function PuzzleScreen({
       getDifficulty(difficultyId),
       text,
       dynamicInfo,
+      puzzle.fen,
     );
     if (spoken) setFeedback(spoken);
   }

@@ -19,7 +19,7 @@ Chess engine (chess.js + Stockfish)
 
 ## The Convai Layer
 
-The game uses `@convai/web-sdk@1.3.0` from the browser. A Convai client is created with a character ID, API key, TTS enabled, and ARKit-format lipsync enabled.
+The game uses `@convai/web-sdk@1.6.0-beta.1` from the browser. A Convai client is created with a character ID, API key, TTS enabled, ARKit-format lipsync, and Vision Dynamic Context for the chess board.
 
 ```ts
 const client = new ConvaiClient({
@@ -66,7 +66,7 @@ The pattern matters beyond chess. It separates the question "who controls game s
 
 ## Coach-Decides Mode With `updateContext`
 
-The Coach-decides path leans on the `client.updateContext()` API in `@convai/web-sdk@1.3.0`. Unlike `updateDynamicInfo()`, `updateContext()` accepts a `run_llm` field with three values:
+The Coach-decides path leans on the `client.updateContext()` API in `@convai/web-sdk@1.6.0-beta.1`. Unlike `updateDynamicInfo()`, `updateContext()` accepts a `run_llm` field with three values:
 
 | `run_llm` | Effect |
 | --- | --- |
@@ -139,7 +139,9 @@ This lets the coach behave like a real teacher instead of a move generator. The 
 
 Convai responses can arrive as streamed text while the voice is playing. The manager listens for `bot-llm-text` messages and stores the latest response text.
 
-Speech timing combines SDK `stateChange`, lipsync activity, and a conservative word-count estimate. Coach moves use `waitForFullSpeech: true` so Stockfish replies are applied only after the spoken line finishes.
+Speech timing uses SDK `stateChange`, blendshape queue completion (`getTimeLeftMs`, `isAllFramesConsumed`), stuck-audio detection on coach `<audio>` elements, and clears spurious `isThinking` after TTS. Coach moves use `waitForFullSpeech: true` so Stockfish replies are applied only after playback finishes, without a multi-second post-speech delay or premature cut-off.
+
+Blendshape playback runs through `convaiLipsyncPlayer.ts` — a single 60fps `consumeFrames` clock aligned with the Convai reference player (not mixed `getFrameAtTime` + estimate-extended tail paths).
 
 The manager also stores the longest response text seen during the stream. This helps avoid clipped text bubbles when the streamed message updates in chunks.
 
@@ -151,7 +153,7 @@ The overlay peels before welcome speech. After the board appears, the app waits 
 
 ## Reallusion Avatar Lipsync
 
-Convai provides ARKit-style blendshape frames. Reallusion CC4 avatars use their own morph target names. The bridge between them is an `ARKIT_TO_CC4` mapping table in `src/ReallusionCharacter.tsx`.
+Convai provides ARKit-style blendshape frames. Reallusion CC4 avatars use their own morph target names. The bridge lives in `src/cc4Lipsync.ts` (profiles + morph mapping) and `src/ReallusionCharacter.tsx` (apply + reapply after idle mixer).
 
 Each frame:
 

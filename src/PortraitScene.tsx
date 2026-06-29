@@ -7,10 +7,11 @@ import * as THREE from 'three';
 type Props = {
   bgColor: string;
   enablePostProcessing?: boolean;
+  enableEnvironment?: boolean;
   children: ReactNode;
 };
 
-export default function PortraitScene({ bgColor, enablePostProcessing = true, children }: Props) {
+export default function PortraitScene({ bgColor, enablePostProcessing = true, enableEnvironment = true, children }: Props) {
   const { gl, scene } = useThree();
 
   useEffect(() => {
@@ -26,7 +27,7 @@ export default function PortraitScene({ bgColor, enablePostProcessing = true, ch
       <directionalLight position={[0.6, 1.8, 1.4]} intensity={0.62} color="#f5f0ea" />
       <directionalLight position={[-1.2, 1.1, 0.8]} intensity={0.22} color="#d4dce8" />
       <directionalLight position={[0, 1.4, -1.8]} intensity={0.14} color="#c8d0dc" />
-      <Environment preset="apartment" />
+      {enableEnvironment && <Environment preset="apartment" />}
       {children}
       {enablePostProcessing && (
         <EffectComposer multisampling={4}>

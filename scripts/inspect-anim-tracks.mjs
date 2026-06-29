@@ -6,7 +6,7 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 const root = path.dirname(fileURLToPath(import.meta.url));
 const loader = new GLTFLoader();
 
-for (const file of ['sofia-animations.glb', 'leila-animations.glb']) {
+for (const file of ['sofia-animations.glb', 'cc-female-animations.glb']) {
   const buf = fs.readFileSync(path.join(root, '..', 'public', file));
   const gltf = await loader.parseAsync(buf.buffer, '');
   console.log(`\n${file}`);

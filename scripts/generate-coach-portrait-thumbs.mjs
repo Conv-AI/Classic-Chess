@@ -27,7 +27,11 @@ const PORTRAIT_FOCUS = {
   'magnus.png': 12,
   'sofia.png': 14,
   'arjun.png': 15,
-  'leila.png': 13,
+  'leila.png': 12,
+};
+
+const PORTRAIT_POST = {
+  'leila.png': { brightness: 1.06, saturation: 1.04 },
 };
 
 async function buildThumb(fileName) {
@@ -40,10 +44,14 @@ async function buildThumb(fileName) {
 
   const focusY = PORTRAIT_FOCUS[fileName] ?? 14;
   const crop = coverCropRect(width, height, THUMB_SIZE, focusY);
+  const post = PORTRAIT_POST[fileName];
 
-  await sharp(inputPath)
+  let pipeline = sharp(inputPath)
     .resize(crop.scaledWidth, crop.scaledHeight, { kernel: sharp.kernel.lanczos3 })
-    .extract({ left: crop.left, top: crop.top, width: THUMB_SIZE, height: THUMB_SIZE })
+    .extract({ left: crop.left, top: crop.top, width: THUMB_SIZE, height: THUMB_SIZE });
+  if (post) pipeline = pipeline.modulate(post);
+
+  await pipeline
     .sharpen({ sigma: 0.35, m1: 0.5, m2: 0.4 })
     .png({ compressionLevel: 9, adaptiveFiltering: true })
     .toFile(outputPath);

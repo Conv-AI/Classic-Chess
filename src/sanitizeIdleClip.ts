@@ -1,9 +1,13 @@
 import * as THREE from 'three';
 import { debugLog } from './debugLog';
 
-const BONE_ROOT = 'CC_Base_BoneRoot';
 const EYE_BONE = /^CC_Base_(L_|R_)Eye$/i;
-const HEAD_BONE = /^CC_Base_Head$/i;
+/** Portrait idle sways on hip/pelvis translation and spine/waist rotation — lock for stable framing. */
+const LOCK_POSITION_BONE = /^(CC_Base_BoneRoot|CC_Base_Hip|CC_Base_Pelvis|CC_Base_JawRoot|CC_Base_UpperJaw|CC_Base_Teeth\d+|CC_Base_Tongue\d+)$/i;
+const LOCK_ROTATION_BONE = /^(CC_Base_Head|CC_Base_(Spine\d*|Waist|Pelvis|JawRoot|UpperJaw|Teeth\d+|Tongue\d+))$/i;
+const LOCK_SCALE_BONE = /^(CC_Base_JawRoot|CC_Base_UpperJaw|CC_Base_Teeth\d+|CC_Base_Tongue\d+)$/i;
+const POSITION_LOCK_MIN_DELTA = 0.01;
+const ROTATION_LOCK_MIN_DELTA = 0.01;
 
 /** Only strip eye slides when the track actually moves (avoids touching static exports). */
 const EYE_TRANSLATION_MIN_DELTA = 0.01;
@@ -27,15 +31,12 @@ function trackAxisRange(values: ArrayLike<number>, stride: number, axis: number)
   return max - min;
 }
 
-function freezeBoneRootHorizontalTravel(track: THREE.VectorKeyframeTrack): THREE.VectorKeyframeTrack {
-  const values = track.values.slice();
-  const lockX = values[0];
-  const lockZ = values[2];
-  for (let i = 0; i < track.times.length; i++) {
-    values[i * 3] = lockX;
-    values[i * 3 + 2] = lockZ;
+function trackMaxDelta(values: ArrayLike<number>, stride: number): number {
+  let max = 0;
+  for (let axis = 0; axis < stride; axis++) {
+    max = Math.max(max, trackAxisRange(values, stride, axis));
   }
-  return new THREE.VectorKeyframeTrack(track.name, track.times.slice(), values);
+  return max;
 }
 
 function freezeQuaternionToFirstFrame(track: THREE.QuaternionKeyframeTrack): THREE.QuaternionKeyframeTrack {
@@ -60,19 +61,34 @@ function freezeVectorToFirstFrame(track: THREE.VectorKeyframeTrack, stride: numb
 }
 
 function shouldRemoveEyeTranslation(track: THREE.VectorKeyframeTrack): boolean {
-  const deltaX = trackAxisRange(track.values, 3, 0);
-  const deltaY = trackAxisRange(track.values, 3, 1);
-  const deltaZ = trackAxisRange(track.values, 3, 2);
-  return Math.max(deltaX, deltaY, deltaZ) >= EYE_TRANSLATION_MIN_DELTA;
+  return trackMaxDelta(track.values, 3) >= EYE_TRANSLATION_MIN_DELTA;
+}
+
+function shouldLockPositionTrack(track: THREE.VectorKeyframeTrack): boolean {
+  return trackMaxDelta(track.values, 3) >= POSITION_LOCK_MIN_DELTA;
+}
+
+function shouldLockRotationTrack(track: THREE.VectorKeyframeTrack): boolean {
+  return trackMaxDelta(track.values, 3) >= ROTATION_LOCK_MIN_DELTA;
+}
+
+function shouldLockQuaternionTrack(track: THREE.QuaternionKeyframeTrack): boolean {
+  const values = track.values;
+  if (values.length < 8) return false;
+  const q0 = [values[0], values[1], values[2], values[3]];
+  for (let i = 1; i < track.times.length; i++) {
+    const dx = Math.abs(values[i * 4] - q0[0]);
+    const dy = Math.abs(values[i * 4 + 1] - q0[1]);
+    const dz = Math.abs(values[i * 4 + 2] - q0[2]);
+    const dw = Math.abs(values[i * 4 + 3] - q0[3]);
+    if (Math.max(dx, dy, dz, dw) >= ROTATION_LOCK_MIN_DELTA) return true;
+  }
+  return false;
 }
 
 /**
- * Portrait-safe idle cleanup for all bundled coach animation GLBs:
- * magnus, sofia, arjun, leila (and custom coaches reusing those clips).
- *
- * Visible pupils live on CC_Base_EyeOcclusion and are driven by morph targets, not
- * eye-bone lookAt. Lock head/eye bones to their opening pose so she faces forward
- * without corrupting the rig.
+ * Portrait-safe idle cleanup for all bundled coach animation GLBs.
+ * Locks hip/pelvis translation, spine/waist rotation, and jaw/oral bones so nostrils stay stable.
  */
 export function sanitizePortraitIdleClip(clip: THREE.AnimationClip, assetName?: string): THREE.AnimationClip {
   const removed: string[] = [];
@@ -98,24 +114,31 @@ export function sanitizePortraitIdleClip(clip: THREE.AnimationClip, assetName?: 
         return [];
       }
 
-      if (nodeName === BONE_ROOT) {
-        const deltaX = trackAxisRange(track.values, 3, 0);
-        const deltaZ = trackAxisRange(track.values, 3, 2);
-        if (deltaX < 0.01 && deltaZ < 0.01) return [track];
-        modified.push(`${nodeName}.position (locked X/Z, Δx=${deltaX.toFixed(2)} Δz=${deltaZ.toFixed(2)})`);
-        return [freezeBoneRootHorizontalTravel(track)];
+      if (LOCK_POSITION_BONE.test(nodeName)) {
+        if (!shouldLockPositionTrack(track)) return [track];
+        const delta = trackMaxDelta(track.values, 3);
+        modified.push(`${nodeName}.position (locked to frame 0, Δ=${delta.toFixed(2)})`);
+        return [freezeVectorToFirstFrame(track, 3)];
       }
 
       return [track];
     }
 
-    if (HEAD_BONE.test(nodeName) && property === 'quaternion' && track instanceof THREE.QuaternionKeyframeTrack) {
+    if (LOCK_ROTATION_BONE.test(nodeName) && property === 'quaternion' && track instanceof THREE.QuaternionKeyframeTrack) {
+      if (!shouldLockQuaternionTrack(track)) return [track];
       modified.push(`${nodeName}.quaternion (locked to frame 0)`);
       return [freezeQuaternionToFirstFrame(track)];
     }
 
-    if (HEAD_BONE.test(nodeName) && property === 'rotation' && track instanceof THREE.VectorKeyframeTrack) {
+    if (LOCK_ROTATION_BONE.test(nodeName) && property === 'rotation' && track instanceof THREE.VectorKeyframeTrack) {
+      if (!shouldLockRotationTrack(track)) return [track];
       modified.push(`${nodeName}.rotation (locked to frame 0)`);
+      return [freezeVectorToFirstFrame(track, 3)];
+    }
+
+    if (LOCK_SCALE_BONE.test(nodeName) && property === 'scale' && track instanceof THREE.VectorKeyframeTrack) {
+      if (!shouldLockRotationTrack(track)) return [track];
+      modified.push(`${nodeName}.scale (locked to frame 0)`);
       return [freezeVectorToFirstFrame(track, 3)];
     }
 

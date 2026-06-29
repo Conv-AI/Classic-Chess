@@ -8,6 +8,8 @@ It is written as both a tutorial and an implementation handoff. If another agent
 
 The app now supports optional Google sign-in without blocking guest play.
 
+**Production status:** The Google OAuth app is configured as **External** and has been **published**, so sign-in is available to any Google account (not only Workspace org members or manually listed test users). Users outside your project may see Google's standard unverified-app interstitial until you complete Google's verification flow.
+
 The implementation adds:
 
 - A top-right Google sign-in/account control.
@@ -31,7 +33,7 @@ Important files:
 - `src/App.tsx`: stores auth state and passes identity into game/puzzle flows.
 - `src/convaiManager.ts`: passes `endUserId`/`endUserMetadata` to `ConvaiClient`, MAU recovery, welcome delivery, and writes memories.
 - `src/convaiEndUsers.ts`: list/delete end-user helpers and MAU error detection.
-- `src/coachConfig.ts`: coach personas, portrait paths, default coach (Sofia), guest character ID resolution.
+- `src/coachConfig.ts`: coach personas, portrait paths, default coach (**Leila**), guest character ID resolution.
 - `src/MenuScreen.tsx`: menu coach picker (headshot thumbnails are cosmetic; unrelated to LTM).
 - `vite.config.ts`: local auth endpoints and Google token verification.
 - `package.json`: adds `google-auth-library`.
@@ -47,8 +49,8 @@ Do this once for the Google account/project you want to use.
    - App name: something like `Classic Chess`.
    - User support email: your Google account.
    - Developer contact email: your Google account.
-5. If Google asks for app type, use `External` unless you are inside a Google Workspace org and intentionally want internal-only access.
-6. If the app is in testing mode, add your own Google account as a test user.
+5. If Google asks for app type, use **External** unless you are inside a Google Workspace org and intentionally want internal-only access.
+6. For public use, set publishing status to **In production** (published). While in **Testing**, only accounts listed under **Test users** can sign in.
 7. Go to Credentials.
 8. Create an OAuth 2.0 Client ID.
 9. Choose application type `Web application`.
@@ -378,6 +380,28 @@ Before deploying this as a real site:
 7. Do not put a Google client secret in the browser.
 
 Static hosting alone cannot securely verify Google ID tokens because verification must happen server-side. It can still decode the Google credential for a demo identity, which is what this app now does on GitHub Pages.
+
+## Making Google Sign-In Work for Any Google User
+
+If sign-in only works for people in your Google Workspace organization, the OAuth app is almost certainly configured as **Internal**.
+
+### Fix in Google Cloud Console
+
+1. Open [Google Cloud Console](https://console.cloud.google.com/) → **APIs & Services** → **OAuth consent screen**.
+2. Under **User type**, choose **External** (not Internal).
+   - **Internal** limits sign-in to users in your Workspace org only.
+   - **External** allows any Google account.
+3. Save the consent screen.
+4. Set publishing status to **In production** when you want any Google user to sign in without being added as a test user. (Classic Chess is published for external users.)
+5. Under **Credentials** → your **OAuth 2.0 Client ID** (Web application):
+   - Add every origin where the game runs under **Authorized JavaScript origins** (e.g. `http://localhost:5173`, your production URL).
+   - Do **not** restrict the client to a hosted domain — the app does not set `hd` and should accept any verified Google account.
+
+### After changing to External
+
+- Users outside your org may still see "Google hasn't verified this app" until you complete verification or they click through as testers.
+- For a public launch, submit the app for **Google verification** once the consent screen is complete.
+- Restart Vite after changing env vars; confirm `VITE_GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_ID` match the same Web client ID.
 
 ## Useful Debug Checklist
 

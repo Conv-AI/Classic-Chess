@@ -11,7 +11,7 @@ export type CoachConfig = {
   id: CoachId;
   name: string;
   title: string;
-  assetName: 'Vincent' | 'Tyler' | 'Cassandra' | 'Danielle';
+  assetName: 'Vincent' | 'Tyler' | 'Cassandra' | 'Leila';
   portraitFile: string;
   /** Vertical focus for menu headshot crop (T-pose sources), percent from top. */
   portraitFocusY?: number;
@@ -157,11 +157,11 @@ export const COACHES: CoachConfig[] = [
     id: 'leila',
     name: 'Leila',
     title: 'The Strategist',
-    assetName: 'Danielle',
+    assetName: 'Leila',
     portraitFile: 'coach-portraits/leila.png',
-    portraitFocusY: 13,
-    modelFile: 'leila.glb',
-    idleFile: 'leila-animations.glb',
+    portraitFocusY: 12,
+    modelFile: 'cc-female.glb',
+    idleFile: 'cc-female-animations.glb',
     characterId: 'c1f0a244-477c-11f1-acd0-42010a7be02c',
     bgColor: '#e0d5dd',
     accent: '#8f5f86',
@@ -197,7 +197,7 @@ export function resolveConvaiCharacterId(coach: CoachConfig, signedInWithLtm: bo
   return coach.guestCharacterId?.trim() || coach.characterId;
 }
 
-export const DEFAULT_COACH = COACHES[1]; // Sofia
+export const DEFAULT_COACH = COACHES.find((c) => c.id === 'leila') ?? COACHES[3];
 export const DEFAULT_DIFFICULTY = DIFFICULTIES[1];
 
 export function getCoachPortraitUrl(coach: Pick<CoachConfig, 'portraitFile'>): string {
