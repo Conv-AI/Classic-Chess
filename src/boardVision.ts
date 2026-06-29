@@ -36,10 +36,6 @@ export type BoardVisionSession = {
   isPublished: () => boolean;
 };
 
-export function isBoardVisionEnabled(): boolean {
-  return true;
-}
-
 function visionErrorMessage(err: unknown): string {
   if (err instanceof Error) return err.message || err.name;
   if (typeof err === 'string') return err;
@@ -184,7 +180,7 @@ function renderBoardFromFen(
   return true;
 }
 
-async function waitForRoomReady(client: any, timeoutMs = 5000): Promise<boolean> {
+async function waitForRoomReady(client: any, timeoutMs = 10000): Promise<boolean> {
   const room = client?.room;
   if (!room) return true;
   const start = Date.now();
@@ -210,6 +206,7 @@ export async function publishBoardVisionCanvas(
   client: any,
   selector = DEFAULT_BOARD_SELECTOR,
   initialFen = STARTING_FEN,
+  options: { readyWaitMs?: number } = {},
 ): Promise<BoardVisionSession | null> {
   const videoControls = client?.videoControls;
   const publishCanvas = videoControls?.publishCanvas;
@@ -288,8 +285,13 @@ export async function publishBoardVisionCanvas(
     published = false;
   };
 
-  await waitForRoomReady(client);
+  await waitForRoomReady(client, options.readyWaitMs ?? 10000);
 
+  if (client?.room?.state !== 'connected') {
+    debugLog('BoardVision', `Room not connected (state=${client?.room?.state ?? 'missing'}) — skipping publish`);
+    await stop();
+    return null;
+  }
   try {
     visionHandle = await publishCanvas.call(videoControls, canvas, {
       source: 'canvas',
@@ -317,25 +319,27 @@ export async function publishBoardVisionCanvas(
 export async function ensureBoardVisionCanvas(
   client: any,
   existing: BoardVisionSession | null | undefined,
-  options: { fen?: string; attempts?: number; delayMs?: number } = {},
+  options: { fen?: string; attempts?: number; delayMs?: number; readyWaitMs?: number } = {},
 ): Promise<BoardVisionSession | null> {
-  if (existing?.isPublished()) return existing;
+  if (existing?.isPublished()) {
+    if (options.fen?.trim()) existing.updateFromFen(options.fen);
+    else existing.refresh();
+    return existing;
+  }
 
-  const attempts = options.attempts ?? 6;
+  const attempts = options.attempts ?? 2;
   const delayMs = options.delayMs ?? 600;
   let last: BoardVisionSession | null = existing ?? null;
 
   for (let attempt = 0; attempt < attempts; attempt++) {
-    if (last?.isPublished()) return last;
     if (attempt > 0) {
       await new Promise((resolve) => window.setTimeout(resolve, delayMs * attempt));
     }
-    last = await publishBoardVisionCanvas(client, undefined, options.fen);
+    last = await publishBoardVisionCanvas(client, undefined, options.fen, {
+      readyWaitMs: options.readyWaitMs,
+    });
     if (last?.isPublished()) return last;
   }
 
   return last;
 }
-
-/** @deprecated Use publishBoardVisionCanvas */
-export const publishBoardVisionTrack = publishBoardVisionCanvas;

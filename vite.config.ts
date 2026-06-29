@@ -6,6 +6,7 @@ import react from '@vitejs/plugin-react';
 import { OAuth2Client } from 'google-auth-library';
 
 const LOG_FILE = path.resolve(__dirname, 'debug.log');
+const CONVAI_LOCAL_ENV_FILE = path.resolve(__dirname, '.env.convai.local');
 const AUTH_COOKIE = 'classic_chess_auth';
 const AUTH_MAX_AGE_SECONDS = 60 * 60 * 24 * 14;
 
@@ -15,6 +16,25 @@ type AuthSessionUser = {
   email: string;
   picture?: string;
 };
+
+function loadConvaiLocalEnv(): Record<string, string> {
+  if (!fs.existsSync(CONVAI_LOCAL_ENV_FILE)) return {};
+  const values: Record<string, string> = {};
+  const text = fs.readFileSync(CONVAI_LOCAL_ENV_FILE, 'utf-8');
+  for (const rawLine of text.split('\n')) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith('#')) continue;
+    const eq = line.indexOf('=');
+    if (eq <= 0) continue;
+    const key = line.slice(0, eq).trim();
+    let value = line.slice(eq + 1).trim();
+    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+      value = value.slice(1, -1);
+    }
+    values[key] = value;
+  }
+  return values;
+}
 
 function parseCookies(header: string | string[] | undefined): Record<string, string> {
   const value = Array.isArray(header) ? header.join(';') : header ?? '';
@@ -241,7 +261,14 @@ function logServerPlugin(datasetToolsEnabled: boolean, googleClientId: string): 
   };
 }
 
+function applyConvaiLocalEnv(): void {
+  const values = loadConvaiLocalEnv();
+  const apiKey = values.VITE_CONVAI_API_KEY?.trim();
+  if (apiKey) process.env.VITE_CONVAI_API_KEY = apiKey;
+}
+
 export default defineConfig(({ mode }) => {
+  applyConvaiLocalEnv();
   const datasetToolsEnabled = mode === 'dataset';
   const env = loadEnv(mode, process.cwd(), '');
   const googleClientId = env.GOOGLE_CLIENT_ID || env.VITE_GOOGLE_CLIENT_ID || '';

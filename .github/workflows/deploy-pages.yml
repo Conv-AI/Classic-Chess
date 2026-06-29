@@ -53,14 +53,22 @@ jobs:
         run: npm ci
 
       - name: Load frontend environment
+        env:
+          VITE_CONVAI_API_KEY: ${{ secrets.VITE_CONVAI_API_KEY }}
+          VITE_GOOGLE_CLIENT_ID: ${{ secrets.VITE_GOOGLE_CLIENT_ID }}
         shell: bash
         run: |
-          if [ -f .env ]; then
-            grep -E '^VITE_' .env >> "$GITHUB_ENV"
-          fi
-          if [ -z "${VITE_CONVAI_API_KEY:-}" ] && ! grep -q '^VITE_CONVAI_API_KEY=.' .env 2>/dev/null; then
-            echo "VITE_CONVAI_API_KEY is missing or empty"
+          if [ -z "${VITE_CONVAI_API_KEY:-}" ]; then
+            echo "VITE_CONVAI_API_KEY repository secret is missing or empty."
+            echo "Add it under Settings → Secrets and variables → Actions → New repository secret."
             exit 1
+          fi
+          echo "VITE_CONVAI_API_KEY=$VITE_CONVAI_API_KEY" >> "$GITHUB_ENV"
+          if [ -n "${VITE_GOOGLE_CLIENT_ID:-}" ]; then
+            echo "VITE_GOOGLE_CLIENT_ID=$VITE_GOOGLE_CLIENT_ID" >> "$GITHUB_ENV"
+          fi
+          if [ -f .env ]; then
+            grep -E '^VITE_' .env | grep -v '^VITE_CONVAI_API_KEY=' | grep -v '^VITE_GOOGLE_CLIENT_ID=' >> "$GITHUB_ENV" || true
           fi
 
       - name: Build

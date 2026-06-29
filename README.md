@@ -17,7 +17,7 @@ Classic Chess is a React, TypeScript, Vite chess coaching app. It combines `ches
 - **Mic on coach card** — microphone toggle lives in the caption bar under the portrait (removed from the game topbar)
 - **Turn feedback** — calm chime + subtle board pulse when it becomes your turn
 - **UI sounds** — gentle chimes for navigation, confirm, toggle, send, and tap actions (`src/uiSounds.ts`)
-- **API key management** — `VITE_CONVAI_API_KEY` in `.env` or a key saved in the browser; modal with Convai signup steps when no key is detected; masked key badge on the menu (`09***`)
+- **API key management** — Convai key in `.env.convai.local` (local dev), GitHub Secret on deploy, in-app modal, or `localStorage`; masked key badge on the menu (`09***`)
 - **Custom coach creator** — Convai Core API with language-filtered voices and verified model list (default: `gemini-2.5-flash-lite`)
 - **Board vision** — chess board canvas is published via Convai Vision Dynamic Context (`@convai/web-sdk@1.6.0-beta.1`) so the coach sees the position alongside text context
 - Microphone toggle for voice chat, off by default
@@ -73,16 +73,35 @@ Uses `@convai/web-sdk@1.6.0-beta.1`.
 
 ## Environment
 
+**Local Convai API key** — copy [`.env.convai.local.example`](.env.convai.local.example) to `.env.convai.local` and paste your key. This file is gitignored (via `.env.*`) and is what `npm run dev` uses (loaded in `vite.config.ts`). Do not put the Convai key in `.env`.
+
+**Other local settings** — copy [`.env.example`](.env.example) to `.env` for Google sign-in (`VITE_GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_ID`). Never commit `.env` or `.env.convai.local`.
+
 ```bash
-# Required for Convai (or add via in-app modal — stored in localStorage)
-VITE_CONVAI_API_KEY=your_key_here
+cp .env.convai.local.example .env.convai.local   # then edit — Convai API key
+cp .env.example .env                             # Google client ID, optional guest clones
+```
 
-# Optional: Google sign-in for Convai long-term memory (see docs/google-convai-memory-tutorial.md)
-VITE_GOOGLE_CLIENT_ID=your-web-client-id.apps.googleusercontent.com
+`.env.convai.local` takes priority over a key in `.env` or `localStorage` when present.
 
+### GitHub Actions secrets (Pages deploy)
+
+The deploy workflow (`.github/workflows/deploy-pages.yml`) injects secrets at **build time** — they are not stored in the repo.
+
+1. Regenerate your Convai API key in the [Convai dashboard](https://convai.com) (revoke the old one if it was ever committed).
+2. Open your GitHub repo → **Settings** → **Secrets and variables** → **Actions**.
+3. Click **New repository secret** and add:
+   - `VITE_CONVAI_API_KEY` — your new Convai API key (required for deploy).
+   - `VITE_GOOGLE_CLIENT_ID` — Google OAuth Web client ID (optional; enables sign-in on the deployed site).
+4. Push to `master` or run the **Deploy GitHub Pages** workflow manually.
+
+**Important:** `VITE_*` variables are embedded in the built JavaScript bundle. GitHub Secrets keep the key out of git history, but anyone who loads your public Pages site can still extract it from the client bundle. For a fully private key, serve short-lived [Convai auth tokens](https://docs.convai.com/api-docs/plugins-and-integrations/web-plugins/convai-web-sdk/auth-tokens) from a backend instead of baking `VITE_CONVAI_API_KEY` into the frontend.
+
+Optional local overrides:
+
+```bash
 # Optional: LTM-disabled Convai character clones for anonymous guests (one per builtin coach)
 # VITE_CONVAI_GUEST_CHARACTER_LEILA=...
-# VITE_CONVAI_GUEST_CHARACTER_MAGNUS=...
 
 # Optional: override character GLB asset base URL (defaults to bundled public/ assets)
 # VITE_CHARACTER_ASSET_BASE_URL=https://...

@@ -1,6 +1,7 @@
 /// <reference types="vite/client" />
 
 interface ImportMetaEnv {
+  readonly VITE_CONVAI_API_KEY?: string;
   readonly VITE_CONVAI_LOGIN_URL?: string;
   readonly VITE_CONVAI_DECRYPT_URL?: string;
   readonly VITE_CONVAI_AUTH_ENABLED?: string;

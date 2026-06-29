@@ -13,7 +13,9 @@ export function getStoredConvaiApiKey(): string {
 }
 
 export function getConvaiApiKey(): string {
-  return getStoredConvaiApiKey() || getEnvConvaiApiKey();
+  const envKey = getEnvConvaiApiKey();
+  if (envKey) return envKey;
+  return getStoredConvaiApiKey();
 }
 
 export function hasConvaiApiKey(): boolean {

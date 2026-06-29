@@ -106,6 +106,10 @@ export function advanceLipsyncFrame(
 
   const shouldPlay = shouldPlayLipsyncFrames(queue);
   if (!shouldPlay) {
+    const queueDrained = typeof queue.hasFrames === 'function' && !queue.hasFrames();
+    if (state.lastFrame && isEnded && queueDrained) {
+      state.lastFrame = null;
+    }
     return state.lastFrame;
   }
 
@@ -169,4 +173,25 @@ export function isLipsyncPlayerActive(
   queue: Parameters<typeof shouldPlayLipsyncFrames>[0],
 ): boolean {
   return shouldPlayLipsyncFrames(queue) || state.lastFrame !== null;
+}
+
+/** After audio ends, consume any remaining blendshape frames so speech-wait can finish. */
+export function drainLipsyncQueueRemaining(
+  state: ConvaiLipsyncPlayerState,
+  queue: {
+    hasFrames?: () => boolean;
+    isConversationEnded?: () => boolean;
+    length?: number;
+    getLength?: () => number;
+    consumeFrames?: (count: number) => void;
+  },
+): void {
+  const queueLength = getQueueLength(queue);
+  if (queueLength > 0 && typeof queue.consumeFrames === 'function') {
+    queue.consumeFrames(queueLength);
+  }
+  state.lastFrame = null;
+  state.lastPlayedFrameIndex = -1;
+  state.accumulatedTimeMs = 0;
+  state.lastFrameTime = 0;
 }

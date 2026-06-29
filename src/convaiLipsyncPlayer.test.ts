@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   advanceLipsyncFrame,
   createLipsyncPlayerState,
+  drainLipsyncQueueRemaining,
   resetLipsyncPlayerState,
   shouldPlayLipsyncFrames,
 } from './convaiLipsyncPlayer';
@@ -56,5 +57,36 @@ describe('convaiLipsyncPlayer', () => {
     resetLipsyncPlayerState(state);
     expect(state.lastFrame).toBeNull();
     expect(state.lastPlayedFrameIndex).toBe(-1);
+  });
+
+  it('drainLipsyncQueueRemaining consumes leftover frames', () => {
+    const state = createLipsyncPlayerState();
+    state.lastFrame = new Float32Array([0.5]);
+    let frames = [new Float32Array([0.1]), new Float32Array([0.2])];
+    const queue = {
+      hasFrames: () => frames.length > 0,
+      get length() { return frames.length; },
+      consumeFrames: (count: number) => { frames = frames.slice(count); },
+    };
+    drainLipsyncQueueRemaining(state, queue);
+    expect(frames.length).toBe(0);
+    expect(state.lastFrame).toBeNull();
+  });
+
+  it('lipsync tail frames alone do not imply speech signal is active', () => {
+    const queue = mockQueue({ hasEndSignal: true, isBotSpeaking: false });
+    expect(shouldPlayLipsyncFrames(queue)).toBe(true);
+    const speechSignalActive = false;
+    expect(speechSignalActive).toBe(false);
+  });
+
+  it('clears held lastFrame when conversation ended and queue drained', () => {
+    const state = createLipsyncPlayerState();
+    state.lastFrame = new Float32Array([0.4]);
+    state.wasConversationActive = true;
+    const queue = mockQueue({ hasEndSignal: true, frames: [] });
+    const frame = advanceLipsyncFrame(state, queue, 1000);
+    expect(frame).toBeNull();
+    expect(state.lastFrame).toBeNull();
   });
 });

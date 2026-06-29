@@ -19,6 +19,7 @@ import { debugLog } from './debugLog';
 import {
   advanceLipsyncFrame,
   createLipsyncPlayerState,
+  drainLipsyncQueueRemaining,
   isLipsyncPlayerActive,
   resetLipsyncPlayerState,
   shouldPlayLipsyncFrames,
@@ -52,6 +53,7 @@ type CoachConnection = {
   coach: CoachConfig;
   client: any;
   audioRenderer: any;
+  coachAudioEl: HTMLAudioElement | null;
   connected: boolean;
   connecting: boolean;
   botReady: boolean;
@@ -83,6 +85,8 @@ type CoachConnection = {
   boardVision: BoardVisionSession | null;
   lastConnectError: string;
   ltmRecoveryAttempted: boolean;
+  pendingBoardVisionFen: string;
+  boardVisionPublishPromise: Promise<BoardVisionSession | null> | null;
 };
 
 function createConnection(coach: CoachConfig): CoachConnection {
@@ -90,6 +94,7 @@ function createConnection(coach: CoachConfig): CoachConnection {
     coach,
     client: null,
     audioRenderer: null,
+    coachAudioEl: null,
     connected: false,
     connecting: false,
     botReady: false,
@@ -121,6 +126,8 @@ function createConnection(coach: CoachConfig): CoachConnection {
     boardVision: null,
     lastConnectError: '',
     ltmRecoveryAttempted: false,
+    pendingBoardVisionFen: '',
+    boardVisionPublishPromise: null,
   };
 }
 
@@ -158,6 +165,8 @@ class ChessConvaiManager {
   private coachAudioSamples = new WeakMap<HTMLAudioElement, number>();
   /** Wall-clock time when coach <audio> last advanced — frozen elements are not "playing". */
   private coachAudioLastAdvanceAt = 0;
+  /** When audible <audio> was first seen without currentTime advancing. */
+  private coachAudioAudibleSince = 0;
   private static readonly COACH_AUDIO_STUCK_MS = 450;
 
   constructor() {
@@ -244,8 +253,8 @@ class ChessConvaiManager {
         if (options.waitForBotReady) await this.waitForReady(conn, options.readyWaitMs ?? 3000);
         if (conn.connected && conn.staticPolicy) await this.seedStaticCoachPolicy(coach, conn.staticPolicy);
         if (conn.connected) await this.ensureProfileMemory(conn);
-        if (conn.connected && !conn.boardVision && conn.client) {
-          conn.boardVision = await ensureBoardVisionCanvas(conn.client, conn.boardVision);
+        if (conn.connected && !conn.boardVision && conn.client && conn.botReady) {
+          void this.ensureCoachBoardVision(conn);
         }
         this.emitStatus();
         return;
@@ -433,6 +442,7 @@ class ChessConvaiManager {
       conn.unsubFns.push(client.on('botReady', () => {
         conn.botReady = true;
         debugLog('Convai', `[${coach.name}] BOT READY`);
+        void this.ensureCoachBoardVision(conn);
         this.emitStatus();
       }));
 
@@ -498,13 +508,10 @@ class ChessConvaiManager {
 
       try {
         conn.audioRenderer = new AudioRenderer(client.room);
+        conn.coachAudioEl = this.resolveCoachAudioElement(conn.audioRenderer);
         debugLog('Convai', `[${coach.name}] AudioRenderer created`);
       } catch (err) {
         debugLog('Convai', `[${coach.name}] AudioRenderer failed:`, err);
-      }
-
-      if (!conn.boardVision) {
-        conn.boardVision = await ensureBoardVisionCanvas(client, conn.boardVision);
       }
 
       setTimeout(() => {
@@ -515,6 +522,7 @@ class ChessConvaiManager {
 
     if (conn.staticPolicy) await this.seedStaticCoachPolicy(coach, conn.staticPolicy);
     if (options.waitForBotReady) await this.waitForReady(conn, options.readyWaitMs ?? 5000);
+    await this.ensureCoachBoardVision(conn);
     await this.ensureProfileMemory(conn);
   }
 
@@ -730,20 +738,43 @@ class ChessConvaiManager {
   refreshBoardVision(coach: CoachConfig, fen?: string): void {
     const conn = this.pool.get(coach.id);
     if (!conn?.client) return;
+    void this.ensureCoachBoardVision(conn, fen);
+  }
 
-    if (!conn.boardVision?.isPublished()) {
-      void ensureBoardVisionCanvas(conn.client, conn.boardVision, { fen }).then((session) => {
-        if (session) conn.boardVision = session;
-      });
-      return;
+  private async ensureCoachBoardVision(conn: CoachConnection, fen?: string): Promise<BoardVisionSession | null> {
+    if (fen?.trim()) conn.pendingBoardVisionFen = fen;
+    if (!conn.client || !conn.connected || !conn.botReady) return null;
+
+    if (conn.boardVision?.isPublished()) {
+      const activeFen = fen?.trim() || conn.pendingBoardVisionFen;
+      if (activeFen) conn.boardVision.updateFromFen(activeFen);
+      else conn.boardVision.refresh();
+      conn.pendingBoardVisionFen = '';
+      return conn.boardVision;
     }
 
-    const refreshed = fen?.trim()
-      ? conn.boardVision.updateFromFen(fen)
-      : conn.boardVision.refresh();
-    if (!refreshed) {
-      debugLog('BoardVision', `[${coach.name}] Live board refresh skipped`);
-    }
+    if (conn.boardVisionPublishPromise) return conn.boardVisionPublishPromise;
+
+    const publishFen = fen?.trim() || conn.pendingBoardVisionFen || undefined;
+    conn.boardVisionPublishPromise = ensureBoardVisionCanvas(conn.client, null, {
+      fen: publishFen,
+      attempts: 2,
+      delayMs: 600,
+      readyWaitMs: 8000,
+    }).then((session) => {
+      conn.boardVisionPublishPromise = null;
+      if (session?.isPublished()) {
+        conn.boardVision = session;
+        conn.pendingBoardVisionFen = '';
+        if (fen?.trim()) session.updateFromFen(fen);
+      }
+      return session;
+    }).catch(() => {
+      conn.boardVisionPublishPromise = null;
+      return null;
+    });
+
+    return conn.boardVisionPublishPromise;
   }
 
   async beginNewGame(
@@ -876,7 +907,9 @@ class ChessConvaiManager {
       this.streamDebounce = null;
     }
     try { conn.client?.blendshapeQueue?.stopBotSpeaking?.(); } catch {}
-    this.resetLipsyncState(conn);
+    if (!this.isCoachLipsyncTailComplete(conn)) {
+      this.resetLipsyncState(conn);
+    }
     const endedAt = Date.now();
     conn.lastSpeechEndedAt = endedAt;
     this.lastSpeechEndedAt = endedAt;
@@ -904,6 +937,48 @@ class ChessConvaiManager {
     return Math.min(12000, Math.max(1400, words * 420 + 500));
   }
 
+  private estimateLipsyncTailMs(conn: CoachConnection): number {
+    const queue = conn.client?.blendshapeQueue;
+    const timeLeftMs = queue?.getTimeLeftMs?.();
+    if (typeof timeLeftMs === 'number' && timeLeftMs > 0) return timeLeftMs;
+    return 2000;
+  }
+
+  private computeSpeechWaitBudget(conn: CoachConnection, finalText: string): number {
+    return Math.max(
+      this.estimateSpeechMs(finalText) + 3000,
+      this.estimateLipsyncTailMs(conn) + 1500,
+    );
+  }
+
+  private resolveCoachAudioElement(audioRenderer: any): HTMLAudioElement | null {
+    if (!audioRenderer) return null;
+    const candidates = [
+      audioRenderer.element,
+      audioRenderer.audioElement,
+      audioRenderer._audioElement,
+      audioRenderer.audio,
+    ];
+    for (const candidate of candidates) {
+      if (candidate instanceof HTMLAudioElement) return candidate;
+    }
+    return null;
+  }
+
+  private getCoachAudioElements(conn: CoachConnection): HTMLAudioElement[] {
+    if (conn.coachAudioEl && document.contains(conn.coachAudioEl)) {
+      return [conn.coachAudioEl];
+    }
+    if (conn.audioRenderer) {
+      const resolved = this.resolveCoachAudioElement(conn.audioRenderer);
+      if (resolved) {
+        conn.coachAudioEl = resolved;
+        return [resolved];
+      }
+    }
+    return Array.from(document.querySelectorAll('audio'));
+  }
+
   private ensureTtsExpectedUntil(conn: CoachConnection): void {
     const text = this.getBestResponseText(conn);
     if (!text.trim()) return;
@@ -929,28 +1004,40 @@ class ChessConvaiManager {
     return Boolean(queue?.isConversationEnded?.());
   }
 
-  private isCoachAudioElementAudible(): boolean {
-    for (const el of document.querySelectorAll('audio')) {
+  private isCoachAudioElementAudible(conn: CoachConnection): boolean {
+    for (const el of this.getCoachAudioElements(conn)) {
       if (el.muted || el.volume === 0 || el.readyState < 2) continue;
       if (!el.paused && !el.ended && el.currentTime > 0.01) return true;
     }
     return false;
   }
 
-  private isCoachAudioPlaying(): boolean {
-    if (!this.isCoachAudioElementAudible()) {
+  private isCoachAudioPlaying(conn: CoachConnection): boolean {
+    if (!this.isCoachAudioElementAudible(conn)) {
       this.coachAudioLastAdvanceAt = 0;
+      this.coachAudioAudibleSince = 0;
       return false;
     }
-    if (this.coachAudioLastAdvanceAt <= 0) return true;
-    return Date.now() - this.coachAudioLastAdvanceAt < ChessConvaiManager.COACH_AUDIO_STUCK_MS;
+    const now = Date.now();
+    if (this.isCoachAudioAdvancing(conn)) {
+      this.coachAudioLastAdvanceAt = now;
+      this.coachAudioAudibleSince = 0;
+      return true;
+    }
+    if (this.coachAudioLastAdvanceAt > 0) {
+      return now - this.coachAudioLastAdvanceAt < ChessConvaiManager.COACH_AUDIO_STUCK_MS;
+    }
+    if (this.coachAudioAudibleSince <= 0) {
+      this.coachAudioAudibleSince = now;
+    }
+    return now - this.coachAudioAudibleSince < ChessConvaiManager.COACH_AUDIO_STUCK_MS;
   }
 
-  /** True only when an <audio> element's currentTime advanced since the prior sample. */
-  private isCoachAudioAdvancing(): boolean {
+  /** True only when coach <audio> currentTime advanced since the prior sample. */
+  private isCoachAudioAdvancing(conn: CoachConnection): boolean {
     let anyAdvancing = false;
     let sawCandidate = false;
-    for (const el of document.querySelectorAll('audio')) {
+    for (const el of this.getCoachAudioElements(conn)) {
       if (el.muted || el.volume === 0 || el.readyState < 2) continue;
       if (el.paused || el.ended) continue;
       sawCandidate = true;
@@ -977,8 +1064,8 @@ class ChessConvaiManager {
     if (typeof timeLeftMs === 'number' && timeLeftMs <= 0) return true;
     if (
       queue?.isConversationEnded?.()
-      && !this.isCoachAudioPlaying()
-      && !this.isCoachAudioAdvancing()
+      && !this.isCoachAudioPlaying(conn)
+      && !this.isCoachAudioAdvancing(conn)
       && !this.isCoachSpeechSignalActive(conn)
     ) {
       return true;
@@ -1007,12 +1094,50 @@ class ChessConvaiManager {
     return text;
   }
 
-  private isCoachSpeechSignalActive(conn: CoachConnection, turnStartAt?: number): boolean {
+  private isCoachSpeechSignalActive(conn: CoachConnection, _turnStartAt?: number): boolean {
     if (conn.isSpeaking) return true;
     const queue = conn.client?.blendshapeQueue;
     if (typeof queue?.isBotSpeaking === 'function' && queue.isBotSpeaking()) return true;
-    if (this.isCoachAudioAdvancing()) return true;
+    if (this.isCoachAudioAdvancing(conn)) return true;
+    if (this.isCoachAudioPlaying(conn)) return true;
     return false;
+  }
+
+  /** True when SDK queue, audio, and held lipsync tail are all finished for this turn. */
+  private isCoachLipsyncTailComplete(conn: CoachConnection): boolean {
+    const queue = conn.client?.blendshapeQueue;
+    if (shouldPlayLipsyncFrames(queue)) return false;
+    if (typeof queue?.isBotSpeaking === 'function' && queue.isBotSpeaking()) return false;
+    if (conn.isSpeaking) return false;
+    if (this.isCoachAudioAdvancing(conn) || this.isCoachAudioPlaying(conn)) return false;
+    if (isLipsyncPlayerActive(conn.lipsyncPlayer, queue)) return false;
+    return true;
+  }
+
+  private pumpLipsyncTail(conn: CoachConnection): void {
+    const queue = conn.client?.blendshapeQueue;
+    if (!queue) return;
+
+    const audioQuiet = !this.isCoachAudioAdvancing(conn) && !this.isCoachAudioPlaying(conn);
+    const tailTimeLeftMs = queue.getTimeLeftMs?.();
+    const sdkTailElapsed = typeof tailTimeLeftMs === 'number' && tailTimeLeftMs <= 0;
+
+    if (conn.turnEnded && audioQuiet && sdkTailElapsed) {
+      if (shouldPlayLipsyncFrames(queue) || isLipsyncPlayerActive(conn.lipsyncPlayer, queue)) {
+        drainLipsyncQueueRemaining(conn.lipsyncPlayer, queue);
+        conn.lipsyncActive = false;
+        if (this.speakingCoachId === conn.coach.id) this.speakingCoachId = '';
+      }
+      return;
+    }
+
+    const frame = advanceLipsyncFrame(conn.lipsyncPlayer, queue, performance.now());
+    if (frame) {
+      conn.lipsyncActive = true;
+      this.speakingCoachId = conn.coach.id;
+    } else if (this.isCoachLipsyncTailComplete(conn)) {
+      this.finishLipsyncIfEnded(conn);
+    }
   }
 
   private async waitForSilentTurnQuiet(conn: CoachConnection, maxMs: number): Promise<void> {
@@ -1022,7 +1147,7 @@ class ChessConvaiManager {
       if (conn.llmNoResponse || conn.responseSuppressed) return;
       const active = conn.isSpeaking
         || Boolean(conn.client?.blendshapeQueue?.isBotSpeaking?.())
-        || this.isCoachAudioAdvancing();
+        || this.isCoachAudioAdvancing(conn);
       if (!active) sdkQuietMs += 50;
       else sdkQuietMs = 0;
       await this.sleep(50);
@@ -1082,16 +1207,17 @@ class ChessConvaiManager {
       }
 
       const text = this.getTurnResponseText(conn, turnStartAt || undefined);
+      this.pumpLipsyncTail(conn);
       const speechSignalActive = this.isCoachSpeechSignalActive(conn, turnStartAt || undefined);
-      const audioAdvancing = this.isCoachAudioAdvancing();
-      const audioStuck = this.isCoachAudioPlaying() && !audioAdvancing;
+      const audioAdvancing = this.isCoachAudioAdvancing(conn);
+      const audioStuck = this.isCoachAudioPlaying(conn) && !audioAdvancing;
 
       const now = Date.now();
       if (now - lastPollLogAt >= 500) {
         lastPollLogAt = now;
         debugLog(
           'Convai',
-          `[${coach.name}] speech-wait poll: isSpeaking=${conn.isSpeaking} audioAdv=${audioAdvancing} audioStuck=${audioStuck} lipsync=${conn.lipsyncActive} sawActivity=${sawSpeechActivity} signalQuietMs=${signalQuietMs} audioQuietMs=${audioQuietMs} textStableMs=${textStableMs} playbackComplete=${this.isCoachSpeechPlaybackComplete(conn)} elapsed=${now - start}`,
+          `[${coach.name}] speech-wait poll: isSpeaking=${conn.isSpeaking} audioAdv=${audioAdvancing} audioStuck=${audioStuck} lipsync=${conn.lipsyncActive} lipsyncTailComplete=${this.isCoachLipsyncTailComplete(conn)} sawActivity=${sawSpeechActivity} signalQuietMs=${signalQuietMs} audioQuietMs=${audioQuietMs} textStableMs=${textStableMs} playbackComplete=${this.isCoachSpeechPlaybackComplete(conn)} elapsed=${now - start}`,
         );
       }
 
@@ -1114,8 +1240,11 @@ class ChessConvaiManager {
       const signalQuiet = signalQuietMs >= 250;
       const audioQuiet = audioQuietMs >= 350;
       const playbackComplete = this.isCoachSpeechPlaybackComplete(conn);
-      const audioStillPlaying = this.isCoachAudioPlaying();
+      const audioStillPlaying = this.isCoachAudioPlaying(conn);
+      const lipsyncTailComplete = this.isCoachLipsyncTailComplete(conn);
       const sdkQuiet = !speechSignalActive;
+      const tailTimeLeftMs = conn.client?.blendshapeQueue?.getTimeLeftMs?.();
+      const sdkTailDone = typeof tailTimeLeftMs === 'number' ? tailTimeLeftMs <= 0 : playbackComplete;
 
       if (
         text.trim() &&
@@ -1125,13 +1254,44 @@ class ChessConvaiManager {
         signalQuiet &&
         audioQuiet &&
         !audioStillPlaying &&
-        playbackComplete
+        playbackComplete &&
+        lipsyncTailComplete
       ) {
         this.markSpeechEnded(conn, coach.name, `speech complete (sdkQuiet ${signalQuietMs}ms, audioQuiet ${audioQuietMs}ms, playbackComplete)`);
         return;
       }
 
-      if (text.trim() && textSettled && !sawSpeechActivity && playbackComplete) {
+      if (
+        text.trim() &&
+        textSettled &&
+        sawSpeechActivity &&
+        playbackComplete &&
+        lipsyncTailComplete &&
+        signalQuiet &&
+        audioQuiet &&
+        !this.isCoachAudioAdvancing(conn)
+      ) {
+        this.markSpeechEnded(conn, coach.name, `speech complete (playbackComplete, lipsync tail drained)`);
+        return;
+      }
+
+      if (
+        text.trim() &&
+        textSettled &&
+        sawSpeechActivity &&
+        conn.turnEnded &&
+        lipsyncTailComplete &&
+        (playbackComplete || sdkTailDone) &&
+        audioQuiet &&
+        signalQuiet &&
+        !this.isCoachAudioAdvancing(conn) &&
+        !audioStillPlaying
+      ) {
+        this.markSpeechEnded(conn, coach.name, `speech complete (turnEnd tail drained)`);
+        return;
+      }
+
+      if (text.trim() && textSettled && !sawSpeechActivity && playbackComplete && lipsyncTailComplete) {
         this.markSpeechEnded(conn, coach.name, `TTS estimate complete, no activity detected (${this.speechElapsedMs(conn, text)}ms)`);
         return;
       }
@@ -1171,16 +1331,19 @@ class ChessConvaiManager {
     if (frame) {
       conn.lipsyncActive = true;
       this.speakingCoachId = conn.coach.id;
+      if (
+        !playing
+        && !this.isCoachAudioAdvancing(conn)
+        && !this.isCoachAudioPlaying(conn)
+        && this.isCoachLipsyncTailComplete(conn)
+      ) {
+        this.finishLipsyncIfEnded(conn);
+        return null;
+      }
       return frame;
     }
 
-    if (
-      !shouldPlayLipsyncFrames(queue)
-      && !botSpeaking
-      && !conn.isSpeaking
-      && !this.isCoachAudioAdvancing()
-      && !this.isCoachAudioPlaying()
-    ) {
+    if (this.isCoachLipsyncTailComplete(conn)) {
       this.finishLipsyncIfEnded(conn);
     }
     return null;
@@ -1195,8 +1358,8 @@ class ChessConvaiManager {
     if (queue && shouldPlayLipsyncFrames(queue)) return true;
     if (isLipsyncPlayerActive(conn.lipsyncPlayer, queue)) return true;
     if (typeof queue?.isBotSpeaking === 'function' && queue.isBotSpeaking()) return true;
-    if (this.isCoachAudioAdvancing()) return true;
-    return this.isCoachAudioPlaying();
+    if (this.isCoachAudioAdvancing(conn)) return true;
+    return this.isCoachAudioPlaying(conn);
   }
 
   getMicEnabled(): boolean {
@@ -1339,10 +1502,7 @@ class ChessConvaiManager {
     const response = await this.waitForResponseCompletion(readyConn, isAutoContextTurn, textBudgetMs, requireFullSpeech);
     if (requireFullSpeech && response.trim()) {
       const finalText = readyConn.longestResponseText.trim() || this.getBestResponseText(readyConn) || response;
-      const speechBudget = Math.max(
-        remainingBudget(),
-        this.estimateSpeechMs(finalText) + 1500,
-      );
+      const speechBudget = this.computeSpeechWaitBudget(readyConn, finalText);
       await this.waitUntilSpeechFinished(coach, speechBudget, { turnStartAt });
     }
     return response;
@@ -1391,10 +1551,7 @@ class ChessConvaiManager {
     const remainingBudget = () => Math.max(0, turnBudgetMs - (Date.now() - turnStart));
     const response = await this.waitForResponseCompletion(readyConn, false, remainingBudget(), true);
     const finalText = readyConn.longestResponseText.trim() || this.getBestResponseText(readyConn) || response;
-    const speechBudget = Math.max(
-      remainingBudget(),
-      finalText.trim() ? this.estimateSpeechMs(finalText) + 1500 : 0,
-    );
+    const speechBudget = finalText.trim() ? this.computeSpeechWaitBudget(readyConn, finalText) : 0;
     if (finalText.trim() && speechBudget > 0) {
       await this.waitUntilSpeechFinished(coach, speechBudget, { turnStartAt });
     }
@@ -1415,10 +1572,14 @@ class ChessConvaiManager {
     conn.lastTurnEndAt = 0;
     conn.lastFinalTextAt = 0;
     conn.ttsExpectedUntil = 0;
-    this.resetLipsyncState(conn);
   }
 
-  private async waitForFinalText(conn: CoachConnection, maxWaitMs: number, stableMs = 400): Promise<void> {
+  private async waitForFinalText(
+    conn: CoachConnection,
+    maxWaitMs: number,
+    stableMs = 400,
+    requireTurnEnd = false,
+  ): Promise<void> {
     if (maxWaitMs <= 0) return;
     const start = Date.now();
     let stableFor = 0;
@@ -1438,7 +1599,7 @@ class ChessConvaiManager {
         }
       }
       if (current.trim() && conn.turnEnded && stableFor >= 200) return;
-      if (current.trim() && stableFor >= stableMs) return;
+      if (current.trim() && stableFor >= stableMs && !requireTurnEnd) return;
       await this.sleep(50);
     }
   }
@@ -1498,7 +1659,7 @@ class ChessConvaiManager {
     }
 
     if (requireFullSpeech) {
-      await this.waitForFinalText(conn, remaining(), 400);
+      await this.waitForFinalText(conn, remaining(), 400, true);
     } else if ((conn.isSpeaking || everSpoke || conn.lastEmittedText) && remaining() > 0) {
       let silentMs = 0;
       const speakingCap = Math.min(isAutoContextTurn ? 8000 : 20000, remaining());
@@ -1774,8 +1935,8 @@ class ChessConvaiManager {
     if (queue && shouldPlayLipsyncFrames(queue)) return false;
     if (!queue?.isConversationEnded?.()) return false;
     if (conn.isSpeaking || queue.isBotSpeaking?.()) return false;
-    if (this.isCoachAudioAdvancing()) return false;
-    if (this.isCoachAudioPlaying()) return false;
+    if (this.isCoachAudioAdvancing(conn)) return false;
+    if (this.isCoachAudioPlaying(conn)) return false;
     conn.lipsyncActive = false;
     resetLipsyncPlayerState(conn.lipsyncPlayer);
     if (this.speakingCoachId === conn.coach.id) this.speakingCoachId = '';
@@ -1792,10 +1953,13 @@ class ChessConvaiManager {
       try { conn.audioRenderer.destroy(); } catch {}
       conn.audioRenderer = null;
     }
+    conn.coachAudioEl = null;
     if (conn.boardVision) {
       try { conn.boardVision.stop(); } catch {}
       conn.boardVision = null;
     }
+    conn.boardVisionPublishPromise = null;
+    conn.pendingBoardVisionFen = '';
     if (conn.client) {
       try { await conn.client.disconnect(); } catch {}
       conn.client = null;

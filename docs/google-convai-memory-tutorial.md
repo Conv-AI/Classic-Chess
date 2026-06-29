@@ -102,6 +102,8 @@ npm run dev
 
 If you already have a `.env` workflow in this repo, you can also place the same values there.
 
+For the Convai API key locally, copy `.env.convai.local.example` to `.env.convai.local` (gitignored via `.env.*`) — do not put the key in `.env`.
+
 ## How To Test Locally
 
 1. Install dependencies:
