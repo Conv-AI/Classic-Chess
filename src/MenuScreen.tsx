@@ -159,14 +159,13 @@ export default function MenuScreen({
                 >
                   <span className="coach-picker-avatar-wrap" aria-hidden="true">
                     <img
-                      className="coach-picker-avatar"
+                      className="coach-picker-avatar coach-picker-avatar--baked"
                       src={getCoachPortraitThumbUrl(coach)}
                       alt=""
                       width={192}
                       height={192}
                       decoding="async"
                       draggable={false}
-                      style={{ objectPosition: `center ${coach.portraitFocusY ?? 14}%` }}
                     />
                   </span>
                   <span className="coach-picker-label">

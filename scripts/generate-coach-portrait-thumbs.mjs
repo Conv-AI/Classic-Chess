@@ -2,54 +2,34 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import sharp from 'sharp';
+import {
+  BUILTIN_COACH_IDS,
+  COACH_THUMB_CROPS,
+  THUMB_SIZE,
+  coverCropRect,
+  sourceFileForCoach,
+  thumbFileForCoach,
+} from './coachPortraitCrop.mjs';
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORTRAIT_DIR = path.join(ROOT, 'public', 'coach-portraits');
-const THUMB_SIZE = 192;
 
-/** Mirrors CSS object-fit: cover + object-position: center {focusY}%. */
-function coverCropRect(width, height, size, focusYPercent) {
-  const scale = Math.max(size / width, size / height);
-  const scaledWidth = width * scale;
-  const scaledHeight = height * scale;
-  const left = Math.round(Math.min(Math.max((scaledWidth - size) / 2, 0), scaledWidth - size));
-  const focusY = height * (focusYPercent / 100);
-  const top = Math.round(Math.min(Math.max(scale * focusY - size / 2, 0), scaledHeight - size));
-  return {
-    scaledWidth: Math.round(scaledWidth),
-    scaledHeight: Math.round(scaledHeight),
-    left,
-    top,
-  };
-}
-
-const PORTRAIT_FOCUS = {
-  'magnus.png': 12,
-  'sofia.png': 14,
-  'arjun.png': 15,
-  'leila.png': 12,
-};
-
-const PORTRAIT_POST = {
-  'leila.png': { brightness: 1.06, saturation: 1.04 },
-};
-
-async function buildThumb(fileName) {
+async function buildThumb(coachId) {
+  const fileName = sourceFileForCoach(coachId);
   const inputPath = path.join(PORTRAIT_DIR, fileName);
-  const outputPath = path.join(PORTRAIT_DIR, fileName.replace(/\.png$/i, '-thumb.png'));
+  const outputPath = path.join(PORTRAIT_DIR, thumbFileForCoach(coachId));
+  const cropCfg = COACH_THUMB_CROPS[coachId] ?? { focusY: 14 };
   const meta = await sharp(inputPath).metadata();
   const width = meta.width ?? 0;
   const height = meta.height ?? 0;
   if (!width || !height) throw new Error(`Missing dimensions for ${fileName}`);
 
-  const focusY = PORTRAIT_FOCUS[fileName] ?? 14;
-  const crop = coverCropRect(width, height, THUMB_SIZE, focusY);
-  const post = PORTRAIT_POST[fileName];
+  const crop = coverCropRect(width, height, THUMB_SIZE, cropCfg.focusY);
 
   let pipeline = sharp(inputPath)
     .resize(crop.scaledWidth, crop.scaledHeight, { kernel: sharp.kernel.lanczos3 })
     .extract({ left: crop.left, top: crop.top, width: THUMB_SIZE, height: THUMB_SIZE });
-  if (post) pipeline = pipeline.modulate(post);
+  if (cropCfg.post) pipeline = pipeline.modulate(cropCfg.post);
 
   await pipeline
     .sharpen({ sigma: 0.35, m1: 0.5, m2: 0.4 })
@@ -57,13 +37,17 @@ async function buildThumb(fileName) {
     .toFile(outputPath);
 
   const outStat = fs.statSync(outputPath);
-  console.log(`${fileName} -> ${path.basename(outputPath)} (${THUMB_SIZE}x${THUMB_SIZE}, ${Math.round(outStat.size / 1024)}KB)`);
+  console.log(`${fileName} -> ${path.basename(outputPath)} (${THUMB_SIZE}x${THUMB_SIZE}, focusY=${cropCfg.focusY}, ${Math.round(outStat.size / 1024)}KB)`);
 }
 
-const portraits = fs
-  .readdirSync(PORTRAIT_DIR)
-  .filter((name) => name.endsWith('.png') && !name.endsWith('-thumb.png'));
+const argCoach = process.argv[2]?.toLowerCase();
+const coaches = argCoach ? [argCoach] : BUILTIN_COACH_IDS;
 
-for (const fileName of portraits) {
-  await buildThumb(fileName);
+for (const coachId of coaches) {
+  const fileName = sourceFileForCoach(coachId);
+  if (!fs.existsSync(path.join(PORTRAIT_DIR, fileName))) {
+    console.warn(`Skip missing ${fileName}`);
+    continue;
+  }
+  await buildThumb(coachId);
 }

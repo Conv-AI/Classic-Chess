@@ -26,15 +26,30 @@
     const params = new URLSearchParams(location.search);
     const coachId = params.get('coach') || 'leila';
     const configs = {
+      magnus: {
+        model: '/magnus.glb',
+        idle: '/magnus-animations.glb',
+        bg: '#d4dce8',
+        topInsetWorld: 0.035,
+        portraitCropBias: -0.035,
+        horizontalOffset: 0.07,
+        lookAtY: 1.4,
+        cameraZ: 0.9,
+        exposure: 0.94,
+        idleTime: 0,
+      },
       leila: {
         model: '/cc-female.glb',
+        idle: '/cc-female-animations.glb',
         bg: '#e8dde5',
-        portraitCropBias: -0.01,
-        topInsetWorld: 0.07,
+        topInsetWorld: 0.035,
+        portraitCropBias: 0.02,
         horizontalOffset: 0,
-        lookAtY: 1.48,
-        cameraZ: 0.82,
+        lookAtY: 1.4,
+        cameraZ: 0.9,
         exposure: 1.14,
+        idleTime: 0,
+        hideOralMeshes: true,
       },
     };
     const config = configs[coachId];
@@ -42,7 +57,7 @@
 
     const WIDTH = 1200;
     const HEIGHT = 1600;
-    const CAMERA_Z = config.cameraZ ?? 0.9;
+    const CAMERA_Z = config.cameraZ ?? 0.58;
     const FOV = 36;
     const LOOK_AT_Y = config.lookAtY ?? 1.4;
 
@@ -78,6 +93,49 @@
     const loader = new GLTFLoader();
     loader.setDRACOLoader(dracoLoader);
 
+    function softenMaterials(root) {
+      root.traverse((child) => {
+        const mesh = child;
+        if (!mesh.isMesh) return;
+        const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+        for (const material of materials) {
+          if (!material) continue;
+          if ('envMapIntensity' in material) material.envMapIntensity = 0.2;
+          if ('roughness' in material && material.roughness > 0.72) material.roughness = 0.72;
+        }
+      });
+    }
+
+    function hideOralMeshes(root) {
+      root.traverse((child) => {
+        if (!/CC_Base_(Teeth|Tongue)/i.test(child.name)) return;
+        child.visible = false;
+      });
+    }
+
+    function resetEyeMorphs(root) {
+      root.traverse((child) => {
+        if (!child.isSkinnedMesh || !child.morphTargetDictionary || !child.morphTargetInfluences) return;
+        for (const name of Object.keys(child.morphTargetDictionary)) {
+          if (!/^Eye_/i.test(name)) continue;
+          const idx = child.morphTargetDictionary[name];
+          if (idx !== undefined) child.morphTargetInfluences[idx] = 0;
+        }
+      });
+    }
+
+    function applyIdlePose(root, clips, idleTime) {
+      if (!clips?.length || idleTime === undefined) return;
+      const idleClip = clips.find((clip) => clip.name.toLowerCase().includes('idle')) ?? clips[0];
+      const mixer = new THREE.AnimationMixer(root);
+      const action = mixer.clipAction(idleClip);
+      action.play();
+      action.paused = true;
+      action.time = idleTime;
+      mixer.update(0);
+      root.updateMatrixWorld(true);
+    }
+
     function frameCharacter(root) {
       root.position.set(0, 0, 0);
       root.rotation.set(0, 0, 0);
@@ -93,19 +151,17 @@
     }
 
     try {
-      const gltf = await loader.loadAsync(config.model);
-      gltf.scene.traverse((child) => {
-        const mesh = child;
-        if (!mesh.isMesh) return;
-        const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
-        for (const material of materials) {
-          if (!material) continue;
-          if ('envMapIntensity' in material) material.envMapIntensity = 0.2;
-          if ('roughness' in material && material.roughness > 0.72) material.roughness = 0.72;
-        }
-      });
-      frameCharacter(gltf.scene);
-      scene.add(gltf.scene);
+      const [modelGltf, animGltf] = await Promise.all([
+        loader.loadAsync(config.model),
+        loader.loadAsync(config.idle),
+      ]);
+      const root = modelGltf.scene;
+      softenMaterials(root);
+      if (config.hideOralMeshes) hideOralMeshes(root);
+      applyIdlePose(root, animGltf.animations, config.idleTime ?? 0);
+      resetEyeMorphs(root);
+      frameCharacter(root);
+      scene.add(root);
       renderer.render(scene, camera);
       window.__PORTRAIT_DATA_URL__ = canvas.toDataURL('image/png');
       window.__PORTRAIT_READY__ = true;

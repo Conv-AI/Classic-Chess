@@ -11,7 +11,11 @@
     "test": "vitest run",
     "portraits:render": "node scripts/render-coach-portrait.mjs",
     "portraits:thumbs": "node scripts/generate-coach-portrait-thumbs.mjs",
-    "portraits:leila": "node scripts/render-coach-portrait.mjs leila && node scripts/generate-coach-portrait-thumbs.mjs"
+    "portraits:preview": "node scripts/preview-coach-portrait-picker.mjs",
+    "portraits:check": "npm run portraits:thumbs && npm run portraits:preview",
+    "portraits:leila": "node scripts/render-coach-portrait.mjs leila && node scripts/generate-coach-portrait-thumbs.mjs",
+    "portraits:magnus": "node scripts/render-coach-portrait.mjs magnus && node scripts/generate-coach-portrait-thumbs.mjs",
+    "portraits:menu": "node scripts/render-coach-portrait.mjs magnus && node scripts/render-coach-portrait.mjs leila && node scripts/generate-coach-portrait-thumbs.mjs"
   },
   "keywords": [],
   "author": "",

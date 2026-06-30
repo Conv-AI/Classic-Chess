@@ -1276,11 +1276,17 @@ h2 {
   height: 100%;
   display: block;
   object-fit: cover;
-  object-position: center 14%;
+  object-position: center center;
   transform: scale(1.06);
   transform-origin: center center;
   -webkit-backface-visibility: hidden;
   backface-visibility: hidden;
+}
+
+/** Pre-baked 192×192 thumbs — crop is already baked; do not re-apply focus or zoom. */
+.coach-picker-avatar--baked {
+  object-position: center center;
+  transform: none;
 }
 
 .mode-tile {

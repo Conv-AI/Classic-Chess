@@ -13,7 +13,7 @@ export type CoachConfig = {
   title: string;
   assetName: 'Vincent' | 'Tyler' | 'Cassandra' | 'Leila';
   portraitFile: string;
-  /** Vertical focus for menu headshot crop (T-pose sources), percent from top. */
+  /** Vertical focus when baking menu thumbs — must match scripts/coachPortraitCrop.mjs */
   portraitFocusY?: number;
   modelFile: string;
   idleFile: string;
@@ -102,7 +102,7 @@ export const COACHES: CoachConfig[] = [
     title: 'The Grandmaster',
     assetName: 'Vincent',
     portraitFile: 'coach-portraits/magnus.png',
-    portraitFocusY: 12,
+    portraitFocusY: 14,
     modelFile: 'magnus.glb',
     idleFile: 'magnus-animations.glb',
     characterId: 'da1ff068-477c-11f1-a121-42010a7be02c',
@@ -159,7 +159,7 @@ export const COACHES: CoachConfig[] = [
     title: 'The Strategist',
     assetName: 'Leila',
     portraitFile: 'coach-portraits/leila.png',
-    portraitFocusY: 12,
+    portraitFocusY: 14,
     modelFile: 'cc-female.glb',
     idleFile: 'cc-female-animations.glb',
     characterId: 'c1f0a244-477c-11f1-acd0-42010a7be02c',
