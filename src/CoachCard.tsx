@@ -237,7 +237,7 @@ export default function CoachCard({
             gl.setClearColor(coach.bgColor, 1);
           }}
         >
-          <PortraitScene bgColor={coach.bgColor} enablePostProcessing={!isMobileCanvas} enableEnvironment={!isMobileCanvas}>
+          <PortraitScene bgColor={coach.bgColor} enablePostProcessing={!isMobileCanvas}>
             <CharacterErrorBoundary resetKey={characterResetKey} onError={handleCharacterError}>
               <Suspense fallback={null}>
                 <ReallusionCharacter
@@ -245,7 +245,6 @@ export default function CoachCard({
                   assetName={coach.assetName}
                   charUrl={modelUrl}
                   animUrl={idleUrl}
-                  mobileSafe={isMobileCanvas}
                   onReady={handleCharacterReady}
                   framing={{
                     cameraZ: 0.9,
