@@ -212,6 +212,7 @@ Copy-log button in the game topbar copies the in-browser log buffer.
 
 ## References
 
+- [docs/tutorial-series/](docs/tutorial-series/) - 4-part Convai tutorial outline with speaker notes and code references
 - [docs/google-convai-memory-tutorial.md](docs/google-convai-memory-tutorial.md)
 - [docs/coach_personas/](docs/coach_personas/)
 - [docs/convai_web-sdk_documentation.md](docs/convai_web-sdk_documentation.md)
