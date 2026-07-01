@@ -193,17 +193,41 @@ export function probePortraitCenterPixel(
   return { rgb, hex, classify };
 }
 
+function canvasOpacityLabel(canvasEl: HTMLCanvasElement | null | undefined): string {
+  if (!canvasEl) return 'n/a';
+  return window.getComputedStyle(canvasEl).opacity || 'n/a';
+}
+
 export function logPortraitFrameProbe(
   frame: number,
   probe: { hex: string; classify: PortraitPixelClass },
   renderInfo?: { triangles: number; calls: number },
+  canvasEl?: HTMLCanvasElement | null,
 ): void {
   const extra = renderInfo
     ? ` triangles=${renderInfo.triangles} calls=${renderInfo.calls}`
     : '';
+  const opacity = canvasOpacityLabel(canvasEl);
   const level = probe.classify === 'visible_frame' ? 'info' : 'warn';
   const prefix = level === 'warn' ? 'WARN ' : '';
-  debugLog(SCOPE, `${prefix}frame${frame} classify=${probe.classify} center=${probe.hex}${extra}`);
+  debugLog(SCOPE, `${prefix}frame${frame} classify=${probe.classify} center=${probe.hex} canvasOpacity=${opacity}${extra}`);
+}
+
+export function logPortraitDelayedProbe(
+  delayMs: number,
+  probe: { hex: string; classify: PortraitPixelClass },
+  renderInfo?: { triangles: number; calls: number },
+  canvasEl?: HTMLCanvasElement | null,
+): void {
+  const extra = renderInfo
+    ? ` triangles=${renderInfo.triangles} calls=${renderInfo.calls}`
+    : '';
+  const opacity = canvasOpacityLabel(canvasEl);
+  const prefix = probe.classify === 'visible_frame' ? '' : 'WARN ';
+  debugLog(
+    SCOPE,
+    `${prefix}delayedProbe t=${delayMs}ms classify=${probe.classify} center=${probe.hex} canvasOpacity=${opacity}${extra}`,
+  );
 }
 
 export function logPortraitFrustum(

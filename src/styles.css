@@ -3387,6 +3387,14 @@ body {
   opacity: 1;
 }
 
+/* Mobile WebKit skips WebGL compositing when canvas opacity is 0 — skip the fade on touch. */
+@media (pointer: coarse), (max-width: 700px) {
+  .character-window canvas {
+    opacity: 1;
+    transition: none;
+  }
+}
+
 .character-loading {
   position: absolute;
   inset: 0;

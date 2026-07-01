@@ -1,4 +1,4 @@
-import { Component, Suspense, useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
+import { Component, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { Canvas } from '@react-three/fiber';
 import { useGLTF } from '@react-three/drei';
 import type { CoachConfig } from './coachConfig';
@@ -155,16 +155,29 @@ export default function CoachCard({
     debugLog('CoachCard', `Portrait ready for coach=${coach.id}`);
     setCharacterReady(true);
     requestAnimationFrame(() => {
+      onReady?.();
+    });
+  }, [onReady, coach.id]);
+
+  useLayoutEffect(() => {
+    if (!characterReady) return;
+    const canvas = characterWindowRef.current?.querySelector('canvas');
+    if (canvas instanceof HTMLCanvasElement) {
+      canvas.style.opacity = '1';
+    }
+  }, [characterReady]);
+
+  useEffect(() => {
+    if (!characterReady) return;
+    const immediate = window.setTimeout(() => {
       logPortraitReadyState({
         coachId: coach.id,
         characterWindowEl: characterWindowRef.current,
         characterReady: true,
       });
-      requestAnimationFrame(() => {
-        onReady?.();
-      });
-    });
-  }, [onReady, coach.id]);
+    }, 100);
+    return () => window.clearTimeout(immediate);
+  }, [characterReady, coach.id]);
 
   const handleCharacterError = useCallback((error: Error) => {
     setCharacterFailed(true);
@@ -286,7 +299,6 @@ export default function CoachCard({
                   charUrl={modelUrl}
                   animUrl={idleUrl}
                   bgColor={coach.bgColor}
-                  mobileSafe={isMobileCanvas}
                   onReady={handleCharacterReady}
                   framing={{
                     cameraZ: 0.9,

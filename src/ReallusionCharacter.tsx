@@ -16,10 +16,11 @@ import {
 } from './cc4Lipsync';
 import { chessConvai } from './convaiManager';
 import { debugLog } from './debugLog';
+import { isMobilePortrait } from './isMobilePortrait';
 import {
   collectMaterialInventory,
   getPortraitDebugFlag,
-  isPhysicalMaterial,
+  logPortraitDelayedProbe,
   logPortraitFrameProbe,
   logPortraitFrustum,
   logPortraitMaterialTune,
@@ -32,13 +33,13 @@ const MATERIAL_TUNING = {
   hairAlphaTest: 0.16,
   roughnessClamp: 0.92,
   envMapIntensity: 0.48,
-  mobileSkinEnvMapIntensity: 0.22,
-  mobileSkinEmissiveScale: 0.08,
+  skinMetalnessClamp: 0.15,
 } as const;
 
 const HAIR_NAME_PATTERN = /hair|lash|brow|beard|scalp|fur/i;
 const LIPSYNC_LOG_INTERVAL_MS = 2000;
 const PROBE_FRAMES = new Set([5, 20, 60]);
+const DELAYED_PROBE_MS = [1000, 3000] as const;
 
 function recoverMorphTargetNames(root: THREE.Object3D, gltfJson: any) {
   if (!gltfJson?.meshes) return;
@@ -89,65 +90,31 @@ function isSkinLikeMesh(mesh: THREE.Mesh, material: THREE.Material): boolean {
   return /skin|head|face|body|scalp/i.test(meshName) || /skin|head|face|body/i.test(materialName);
 }
 
-function downgradePhysicalMaterial(physical: THREE.MeshPhysicalMaterial): THREE.MeshStandardMaterial {
-  const standard = new THREE.MeshStandardMaterial();
-  standard.name = physical.name;
-  standard.color.copy(physical.color);
-  standard.map = physical.map;
-  standard.normalMap = physical.normalMap;
-  standard.roughnessMap = physical.roughnessMap;
-  standard.metalnessMap = physical.metalnessMap;
-  standard.aoMap = physical.aoMap;
-  standard.emissive.copy(physical.emissive);
-  standard.emissiveMap = physical.emissiveMap;
-  standard.roughness = physical.roughness;
-  standard.metalness = physical.metalness;
-  standard.transparent = physical.transparent;
-  standard.opacity = physical.opacity;
-  standard.side = physical.side;
-  standard.alphaTest = physical.alphaTest;
-  standard.depthWrite = physical.depthWrite;
-  standard.depthTest = physical.depthTest;
-  return standard;
-}
-
-function tuneCharacterMaterials(root: THREE.Object3D, mobileSafe: boolean) {
+function tuneCharacterMaterials(root: THREE.Object3D, mobilePortrait: boolean) {
   root.traverse((child) => {
     const mesh = child as THREE.Mesh;
     if (!mesh.isMesh) return;
     const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
-    const tuned = materials.map((material) => {
-      if (!material) return material;
+    materials.forEach((material) => {
+      if (!material) return;
 
-      let standard = material as THREE.MeshStandardMaterial;
-      if (mobileSafe && isPhysicalMaterial(material)) {
-        standard = downgradePhysicalMaterial(material);
-      }
-
+      const standard = material as THREE.MeshStandardMaterial;
       const hairLike = isHairLikeMesh(mesh, standard);
       const skinLike = isSkinLikeMesh(mesh, standard);
+      const anisotropy = mobilePortrait ? 4 : 8;
 
       if ('map' in standard && standard.map) {
         standard.map.colorSpace = THREE.SRGBColorSpace;
-        standard.map.anisotropy = mobileSafe ? 4 : 8;
+        standard.map.anisotropy = anisotropy;
         standard.map.needsUpdate = true;
       }
-      if ('normalMap' in standard && standard.normalMap) standard.normalMap.anisotropy = mobileSafe ? 4 : 8;
-      if ('roughnessMap' in standard && standard.roughnessMap) standard.roughnessMap.anisotropy = mobileSafe ? 4 : 8;
-      if ('metalnessMap' in standard && standard.metalnessMap) standard.metalnessMap.anisotropy = mobileSafe ? 4 : 8;
-      if ('envMapIntensity' in standard) {
-        standard.envMapIntensity = mobileSafe && skinLike
-          ? MATERIAL_TUNING.mobileSkinEnvMapIntensity
-          : MATERIAL_TUNING.envMapIntensity;
-      }
+      if ('normalMap' in standard && standard.normalMap) standard.normalMap.anisotropy = anisotropy;
+      if ('roughnessMap' in standard && standard.roughnessMap) standard.roughnessMap.anisotropy = anisotropy;
+      if ('metalnessMap' in standard && standard.metalnessMap) standard.metalnessMap.anisotropy = anisotropy;
+      if ('envMapIntensity' in standard) standard.envMapIntensity = MATERIAL_TUNING.envMapIntensity;
       if ('roughness' in standard) standard.roughness = Math.min(standard.roughness, MATERIAL_TUNING.roughnessClamp);
-      if (mobileSafe && skinLike) {
-        standard.transparent = false;
-        standard.opacity = 1;
-        standard.depthWrite = true;
-        if ('emissive' in standard) {
-          standard.emissive.copy(standard.color).multiplyScalar(MATERIAL_TUNING.mobileSkinEmissiveScale);
-        }
+      if (mobilePortrait && skinLike && 'metalness' in standard) {
+        standard.metalness = Math.min(standard.metalness, MATERIAL_TUNING.skinMetalnessClamp);
       }
       if (hairLike) {
         standard.transparent = true;
@@ -160,10 +127,7 @@ function tuneCharacterMaterials(root: THREE.Object3D, mobileSafe: boolean) {
         mesh.renderOrder = 1;
       }
       standard.needsUpdate = true;
-      return standard;
     });
-
-    mesh.material = Array.isArray(mesh.material) ? tuned : tuned[0];
   });
 }
 
@@ -188,7 +152,6 @@ type Props = {
   charUrl: string;
   animUrl: string;
   bgColor: string;
-  mobileSafe?: boolean;
   onReady?: () => void;
   framing: {
     cameraZ: number;
@@ -206,7 +169,6 @@ export default function ReallusionCharacter({
   charUrl,
   animUrl,
   bgColor,
-  mobileSafe = false,
   framing,
   onReady,
 }: Props) {
@@ -220,7 +182,9 @@ export default function ReallusionCharacter({
   const portraitLiveRef = useRef(false);
   const frameCountRef = useRef(0);
   const probedFramesRef = useRef(new Set<number>());
+  const delayedProbeTimersRef = useRef<number[]>([]);
   const materialsTunedRef = useRef(false);
+  const mobilePortrait = isMobilePortrait();
   const { camera, gl } = useThree();
   const gltf = useGLTF(charUrl) as any;
   const { scene } = gltf;
@@ -235,13 +199,13 @@ export default function ReallusionCharacter({
     if (!scene || materialsTunedRef.current) return;
     if (gltf?.parser?.json) recoverMorphTargetNames(scene, gltf.parser.json);
 
-    logPortraitMaterialTune('before', collectMaterialInventory(scene), mobileSafe);
-    tuneCharacterMaterials(scene, mobileSafe);
+    logPortraitMaterialTune('before', collectMaterialInventory(scene), mobilePortrait);
+    tuneCharacterMaterials(scene, mobilePortrait);
     if (getPortraitDebugFlag() === 'basic') {
       applyBasicMaterialDebugSwap(scene);
       debugLog('PortraitDebug', 'basic material swap applied to skin meshes');
     }
-    logPortraitMaterialTune('after', collectMaterialInventory(scene), mobileSafe);
+    logPortraitMaterialTune('after', collectMaterialInventory(scene), mobilePortrait);
     materialsTunedRef.current = true;
 
     lipsyncRef.current = createCC4LipsyncState();
@@ -251,13 +215,20 @@ export default function ReallusionCharacter({
     }
     inspectLipsyncMeshes(scene, coachId);
     debugLog('Lipsync', `Bound ${bound} lipsync mesh(es) for coach=${coachId} asset=${assetName}`);
-  }, [gltf, scene, coachId, assetName, mobileSafe]);
+  }, [gltf, scene, coachId, assetName, mobilePortrait]);
 
   useEffect(() => {
     materialsTunedRef.current = false;
     probedFramesRef.current.clear();
     frameCountRef.current = 0;
-  }, [charUrl, mobileSafe]);
+    delayedProbeTimersRef.current.forEach((id) => window.clearTimeout(id));
+    delayedProbeTimersRef.current = [];
+  }, [charUrl]);
+
+  useEffect(() => () => {
+    delayedProbeTimersRef.current.forEach((id) => window.clearTimeout(id));
+    delayedProbeTimersRef.current = [];
+  }, []);
 
   useEffect(() => {
     portraitLiveRef.current = false;
@@ -281,7 +252,20 @@ export default function ReallusionCharacter({
     logPortraitFrustum(groupRef.current, camera);
     debugLog('ReallusionCharacter', `onReady firing for coachId=${coachId}`);
     onReady?.();
-  }, [scene, framing, onReady, coachId, assetName, camera]);
+
+    delayedProbeTimersRef.current.forEach((id) => window.clearTimeout(id));
+    delayedProbeTimersRef.current = DELAYED_PROBE_MS.map((delayMs) => window.setTimeout(() => {
+      const probe = probePortraitCenterPixel(gl, bgColor);
+      if (!probe) return;
+      const info = gl.info?.render;
+      logPortraitDelayedProbe(
+        delayMs,
+        probe,
+        info ? { triangles: info.triangles, calls: info.calls } : undefined,
+        gl.domElement,
+      );
+    }, delayMs));
+  }, [scene, framing, onReady, coachId, assetName, camera, gl, bgColor]);
 
   useEffect(() => {
     const keys = Object.keys(actions);
@@ -353,17 +337,16 @@ export default function ReallusionCharacter({
     if (!PROBE_FRAMES.has(frame) || probedFramesRef.current.has(frame)) return;
     probedFramesRef.current.add(frame);
 
-    requestAnimationFrame(() => {
-      const probe = probePortraitCenterPixel(gl, bgColor);
-      if (!probe) return;
-      const info = gl.info?.render;
-      logPortraitFrameProbe(
-        frame,
-        probe,
-        info ? { triangles: info.triangles, calls: info.calls } : undefined,
-      );
-    });
-  }, 3);
+    const probe = probePortraitCenterPixel(gl, bgColor);
+    if (!probe) return;
+    const info = gl.info?.render;
+    logPortraitFrameProbe(
+      frame,
+      probe,
+      info ? { triangles: info.triangles, calls: info.calls } : undefined,
+      gl.domElement,
+    );
+  }, -1);
 
   return (
     <group ref={groupRef} dispose={null}>
