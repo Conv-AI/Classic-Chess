@@ -8,6 +8,12 @@ import ReallusionCharacter from './ReallusionCharacter';
 import PortraitScene from './PortraitScene';
 import Tooltip from './Tooltip';
 import { isMobilePortrait } from './isMobilePortrait';
+import {
+  logPortraitBootstrap,
+  logPortraitReadyState,
+  nextCanvasMountCount,
+  shouldUseLeilaFallbackModel,
+} from './portraitDebug';
 import { playUiSound, unlockUiAudio } from './uiSounds';
 
 const DEFAULT_CHARACTER_ASSET_BASE = import.meta.env.BASE_URL;
@@ -75,8 +81,6 @@ export default function CoachCard({
   onChatToggle,
   mic,
 }: Props) {
-  const modelUrl = assetUrl(coach.modelFile);
-  const idleUrl = assetUrl(coach.idleFile);
   const framing = FRAMING_BY_ASSET[coach.assetName] ?? FRAMING_BY_ASSET.Leila;
   const lineRef = useRef<HTMLParagraphElement>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -86,6 +90,13 @@ export default function CoachCard({
   const [characterFailed, setCharacterFailed] = useState(false);
   const [canvasDpr, setCanvasDpr] = useState(() => Math.min(Math.max(window.devicePixelRatio || 1, 2), 2.5));
   const [isMobileCanvas] = useState(() => isMobilePortrait());
+  const canvasMountRef = useRef(0);
+  const glRef = useRef<import('three').WebGLRenderer | null>(null);
+  const leilaFallback = coach.id === 'leila' && shouldUseLeilaFallbackModel(coach.id);
+  const effectiveModelFile = leilaFallback ? 'leila.glb' : coach.modelFile;
+  const effectiveIdleFile = leilaFallback ? 'leila-animations.glb' : coach.idleFile;
+  const modelUrl = assetUrl(effectiveModelFile);
+  const idleUrl = assetUrl(effectiveIdleFile);
   const [displayedLine, setDisplayedLine] = useState('');
   const revealTargetRef = useRef('');
   const revealShownRef = useRef('');
@@ -104,7 +115,7 @@ export default function CoachCard({
 
   useGLTF.preload(modelUrl);
   useGLTF.preload(idleUrl);
-  debugLog('CoachCard', `Rendering coach=${coach.id} model=${coach.modelFile}`);
+  debugLog('CoachCard', `Rendering coach=${coach.id} model=${effectiveModelFile}${leilaFallback ? ' (leila fallback)' : ''}`);
 
   useEffect(() => {
     const el = characterWindowRef.current;
@@ -144,11 +155,16 @@ export default function CoachCard({
     debugLog('CoachCard', `Portrait ready for coach=${coach.id}`);
     setCharacterReady(true);
     requestAnimationFrame(() => {
+      logPortraitReadyState({
+        coachId: coach.id,
+        characterWindowEl: characterWindowRef.current,
+        characterReady: true,
+      });
       requestAnimationFrame(() => {
         onReady?.();
       });
     });
-  }, [onReady]);
+  }, [onReady, coach.id]);
 
   const handleCharacterError = useCallback((error: Error) => {
     setCharacterFailed(true);
@@ -229,15 +245,39 @@ export default function CoachCard({
         <Canvas
           camera={{ position: [0, 1.4, 0.9], fov: 36 }}
           dpr={isMobileCanvas ? Math.min(canvasDpr, 2) : canvasDpr}
-          gl={{ antialias: true, alpha: false, powerPreference: 'high-performance' }}
+          gl={{
+            antialias: true,
+            alpha: false,
+            powerPreference: 'high-performance',
+            preserveDrawingBuffer: isMobileCanvas,
+          }}
           style={{ background: coach.bgColor }}
           onCreated={({ camera, gl }) => {
-            debugLog('CoachCard', `3D scene ready for coach=${coach.id}`);
+            glRef.current = gl;
+            const mountCount = nextCanvasMountCount();
+            canvasMountRef.current = mountCount;
+            debugLog('CoachCard', `3D scene ready for coach=${coach.id} mount=${mountCount}`);
             camera.lookAt(0, 1.4, 0);
             gl.setClearColor(coach.bgColor, 1);
+            requestAnimationFrame(() => {
+              logPortraitBootstrap({
+                coachId: coach.id,
+                modelFile: effectiveModelFile,
+                mountCount,
+                isMobile: isMobileCanvas,
+                characterWindowEl: characterWindowRef.current,
+                canvasEl: characterWindowRef.current?.querySelector('canvas') ?? null,
+                characterReady: false,
+                bgColor: coach.bgColor,
+                gl,
+              });
+            });
           }}
         >
-          <PortraitScene bgColor={coach.bgColor} enablePostProcessing={!isMobileCanvas}>
+          <PortraitScene
+            bgColor={coach.bgColor}
+            enablePostProcessing={!isMobileCanvas}
+          >
             <CharacterErrorBoundary resetKey={characterResetKey} onError={handleCharacterError}>
               <Suspense fallback={null}>
                 <ReallusionCharacter
@@ -245,6 +285,8 @@ export default function CoachCard({
                   assetName={coach.assetName}
                   charUrl={modelUrl}
                   animUrl={idleUrl}
+                  bgColor={coach.bgColor}
+                  mobileSafe={isMobileCanvas}
                   onReady={handleCharacterReady}
                   framing={{
                     cameraZ: 0.9,

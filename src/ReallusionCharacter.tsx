@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef } from 'react';
 import { useAnimations, useGLTF } from '@react-three/drei';
-import { useFrame } from '@react-three/fiber';
+import { useFrame, useThree } from '@react-three/fiber';
 import * as THREE from 'three';
 import type { CoachId } from './coachConfig';
 import {
@@ -16,6 +16,15 @@ import {
 } from './cc4Lipsync';
 import { chessConvai } from './convaiManager';
 import { debugLog } from './debugLog';
+import {
+  collectMaterialInventory,
+  getPortraitDebugFlag,
+  isPhysicalMaterial,
+  logPortraitFrameProbe,
+  logPortraitFrustum,
+  logPortraitMaterialTune,
+  probePortraitCenterPixel,
+} from './portraitDebug';
 import { applyPortraitBlink, createPortraitBlinkState, resetPortraitBlinkMorphs } from './portraitBlink';
 import { sanitizePortraitIdleClip } from './sanitizeIdleClip';
 
@@ -23,10 +32,13 @@ const MATERIAL_TUNING = {
   hairAlphaTest: 0.16,
   roughnessClamp: 0.92,
   envMapIntensity: 0.48,
+  mobileSkinEnvMapIntensity: 0.22,
+  mobileSkinEmissiveScale: 0.08,
 } as const;
 
 const HAIR_NAME_PATTERN = /hair|lash|brow|beard|scalp|fur/i;
 const LIPSYNC_LOG_INTERVAL_MS = 2000;
+const PROBE_FRAMES = new Set([5, 20, 60]);
 
 function recoverMorphTargetNames(root: THREE.Object3D, gltfJson: any) {
   if (!gltfJson?.meshes) return;
@@ -108,8 +120,8 @@ function tuneCharacterMaterials(root: THREE.Object3D, mobileSafe: boolean) {
       if (!material) return material;
 
       let standard = material as THREE.MeshStandardMaterial;
-      if (mobileSafe && (material as THREE.MeshPhysicalMaterial).isMeshPhysicalMaterial) {
-        standard = downgradePhysicalMaterial(material as THREE.MeshPhysicalMaterial);
+      if (mobileSafe && isPhysicalMaterial(material)) {
+        standard = downgradePhysicalMaterial(material);
       }
 
       const hairLike = isHairLikeMesh(mesh, standard);
@@ -124,13 +136,18 @@ function tuneCharacterMaterials(root: THREE.Object3D, mobileSafe: boolean) {
       if ('roughnessMap' in standard && standard.roughnessMap) standard.roughnessMap.anisotropy = mobileSafe ? 4 : 8;
       if ('metalnessMap' in standard && standard.metalnessMap) standard.metalnessMap.anisotropy = mobileSafe ? 4 : 8;
       if ('envMapIntensity' in standard) {
-        standard.envMapIntensity = mobileSafe && skinLike ? 0 : MATERIAL_TUNING.envMapIntensity;
+        standard.envMapIntensity = mobileSafe && skinLike
+          ? MATERIAL_TUNING.mobileSkinEnvMapIntensity
+          : MATERIAL_TUNING.envMapIntensity;
       }
       if ('roughness' in standard) standard.roughness = Math.min(standard.roughness, MATERIAL_TUNING.roughnessClamp);
       if (mobileSafe && skinLike) {
         standard.transparent = false;
         standard.opacity = 1;
         standard.depthWrite = true;
+        if ('emissive' in standard) {
+          standard.emissive.copy(standard.color).multiplyScalar(MATERIAL_TUNING.mobileSkinEmissiveScale);
+        }
       }
       if (hairLike) {
         standard.transparent = true;
@@ -150,11 +167,27 @@ function tuneCharacterMaterials(root: THREE.Object3D, mobileSafe: boolean) {
   });
 }
 
+function applyBasicMaterialDebugSwap(root: THREE.Object3D): void {
+  root.traverse((child) => {
+    const mesh = child as THREE.Mesh;
+    if (!mesh.isMesh) return;
+    const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+    const swapped = materials.map((material) => {
+      if (!material || !isSkinLikeMesh(mesh, material)) return material;
+      const basic = new THREE.MeshBasicMaterial({ map: (material as THREE.MeshStandardMaterial).map });
+      basic.name = `${material.name}_debug_basic`;
+      return basic;
+    });
+    mesh.material = Array.isArray(mesh.material) ? swapped : swapped[0];
+  });
+}
+
 type Props = {
   coachId: CoachId;
   assetName: string;
   charUrl: string;
   animUrl: string;
+  bgColor: string;
   mobileSafe?: boolean;
   onReady?: () => void;
   framing: {
@@ -167,7 +200,16 @@ type Props = {
   };
 };
 
-export default function ReallusionCharacter({ coachId, assetName, charUrl, animUrl, mobileSafe = false, framing, onReady }: Props) {
+export default function ReallusionCharacter({
+  coachId,
+  assetName,
+  charUrl,
+  animUrl,
+  bgColor,
+  mobileSafe = false,
+  framing,
+  onReady,
+}: Props) {
   const groupRef = useRef<THREE.Group>(null);
   const lipsyncRef = useRef(createCC4LipsyncState());
   const hadLipsyncRef = useRef(false);
@@ -176,6 +218,10 @@ export default function ReallusionCharacter({ coachId, assetName, charUrl, animU
   const noFrameLogAtRef = useRef(0);
   const blinkRef = useRef(createPortraitBlinkState(0, Number.POSITIVE_INFINITY));
   const portraitLiveRef = useRef(false);
+  const frameCountRef = useRef(0);
+  const probedFramesRef = useRef(new Set<number>());
+  const materialsTunedRef = useRef(false);
+  const { camera, gl } = useThree();
   const gltf = useGLTF(charUrl) as any;
   const { scene } = gltf;
   const { animations } = useGLTF(animUrl);
@@ -185,9 +231,19 @@ export default function ReallusionCharacter({ coachId, assetName, charUrl, animU
   );
   const { actions } = useAnimations(portraitAnimations, groupRef);
 
-  useMemo(() => {
+  useEffect(() => {
+    if (!scene || materialsTunedRef.current) return;
     if (gltf?.parser?.json) recoverMorphTargetNames(scene, gltf.parser.json);
+
+    logPortraitMaterialTune('before', collectMaterialInventory(scene), mobileSafe);
     tuneCharacterMaterials(scene, mobileSafe);
+    if (getPortraitDebugFlag() === 'basic') {
+      applyBasicMaterialDebugSwap(scene);
+      debugLog('PortraitDebug', 'basic material swap applied to skin meshes');
+    }
+    logPortraitMaterialTune('after', collectMaterialInventory(scene), mobileSafe);
+    materialsTunedRef.current = true;
+
     lipsyncRef.current = createCC4LipsyncState();
     const bound = bindCC4LipsyncMeshes(lipsyncRef.current, scene);
     if (LIPSYNC_PROFILES[assetName]?.hideOralUntilOpen || LIPSYNC_PROFILES[assetName]?.hideOralMeshesAlways) {
@@ -196,6 +252,12 @@ export default function ReallusionCharacter({ coachId, assetName, charUrl, animU
     inspectLipsyncMeshes(scene, coachId);
     debugLog('Lipsync', `Bound ${bound} lipsync mesh(es) for coach=${coachId} asset=${assetName}`);
   }, [gltf, scene, coachId, assetName, mobileSafe]);
+
+  useEffect(() => {
+    materialsTunedRef.current = false;
+    probedFramesRef.current.clear();
+    frameCountRef.current = 0;
+  }, [charUrl, mobileSafe]);
 
   useEffect(() => {
     portraitLiveRef.current = false;
@@ -216,9 +278,10 @@ export default function ReallusionCharacter({ coachId, assetName, charUrl, animU
     resetPortraitBlinkMorphs(groupRef.current);
     blinkRef.current = createPortraitBlinkState();
     portraitLiveRef.current = true;
+    logPortraitFrustum(groupRef.current, camera);
     debugLog('ReallusionCharacter', `onReady firing for coachId=${coachId}`);
     onReady?.();
-  }, [scene, framing, onReady, coachId, assetName]);
+  }, [scene, framing, onReady, coachId, assetName, camera]);
 
   useEffect(() => {
     const keys = Object.keys(actions);
@@ -274,17 +337,33 @@ export default function ReallusionCharacter({ coachId, assetName, charUrl, animU
     }
   });
 
-  // Reapply lipsync after the idle animation mixer so morphs win over skeletal idle.
   useFrame(() => {
     if (!groupRef.current || !lipsyncRef.current.isActive) return;
     reapplyCC4LipsyncFrame(lipsyncRef.current, groupRef.current, assetName);
   }, 1);
 
-  // Jaw bone after mixer — idle clip locks jaw rotation; this wins on the following frame.
   useFrame(() => {
     if (!groupRef.current) return;
     reapplyCC4JawMotion(lipsyncRef.current, groupRef.current, assetName);
   }, 2);
+
+  useFrame(() => {
+    frameCountRef.current += 1;
+    const frame = frameCountRef.current;
+    if (!PROBE_FRAMES.has(frame) || probedFramesRef.current.has(frame)) return;
+    probedFramesRef.current.add(frame);
+
+    requestAnimationFrame(() => {
+      const probe = probePortraitCenterPixel(gl, bgColor);
+      if (!probe) return;
+      const info = gl.info?.render;
+      logPortraitFrameProbe(
+        frame,
+        probe,
+        info ? { triangles: info.triangles, calls: info.calls } : undefined,
+      );
+    });
+  }, 3);
 
   return (
     <group ref={groupRef} dispose={null}>
