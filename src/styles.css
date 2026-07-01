@@ -3392,6 +3392,8 @@ body {
   .character-window canvas {
     opacity: 1;
     transition: none;
+    width: 100%;
+    height: 100%;
   }
 }
 

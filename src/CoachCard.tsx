@@ -9,8 +9,10 @@ import PortraitScene from './PortraitScene';
 import Tooltip from './Tooltip';
 import { isMobilePortrait } from './isMobilePortrait';
 import {
+  attachPortraitWebGLContextListeners,
   logPortraitBootstrap,
   logPortraitReadyState,
+  logPortraitWebGLCapabilities,
   nextCanvasMountCount,
   shouldUseLeilaFallbackModel,
 } from './portraitDebug';
@@ -256,17 +258,16 @@ export default function CoachCard({
         className={`character-window${characterReady ? ' is-ready' : ''}${characterFailed ? ' has-error' : ''}`}
       >
         <Canvas
+          frameloop="always"
           camera={{ position: [0, 1.4, 0.9], fov: 36 }}
           dpr={isMobileCanvas ? Math.min(canvasDpr, 2) : canvasDpr}
-          gl={{
-            antialias: true,
-            alpha: false,
-            powerPreference: 'high-performance',
-            preserveDrawingBuffer: isMobileCanvas,
-          }}
+          gl={{ antialias: true, alpha: false, powerPreference: 'high-performance' }}
           style={{ background: coach.bgColor }}
           onCreated={({ camera, gl }) => {
             glRef.current = gl;
+            gl.debug.checkShaderErrors = true;
+            attachPortraitWebGLContextListeners(gl);
+            logPortraitWebGLCapabilities(gl);
             const mountCount = nextCanvasMountCount();
             canvasMountRef.current = mountCount;
             debugLog('CoachCard', `3D scene ready for coach=${coach.id} mount=${mountCount}`);
@@ -289,7 +290,7 @@ export default function CoachCard({
         >
           <PortraitScene
             bgColor={coach.bgColor}
-            enablePostProcessing={!isMobileCanvas}
+            enablePostProcessing
           >
             <CharacterErrorBoundary resetKey={characterResetKey} onError={handleCharacterError}>
               <Suspense fallback={null}>

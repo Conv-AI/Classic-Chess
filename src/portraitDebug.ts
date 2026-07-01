@@ -52,14 +52,75 @@ export function logPortraitBootstrap(opts: {
   const renderer = webgl ? String(webgl.getParameter(webgl.RENDERER)) : 'n/a';
   const maxTex = webgl ? String(webgl.getParameter(webgl.MAX_TEXTURE_SIZE)) : 'n/a';
 
+  const backingW = canvasEl?.width ?? 0;
+  const backingH = canvasEl?.height ?? 0;
+
   debugLog(
     SCOPE,
     `bootstrap coach=${opts.coachId} model=${opts.modelFile} mount=${opts.mountCount} mobile=${opts.isMobile} ` +
     `ready=${opts.characterReady} win=${Math.round(winRect?.width ?? 0)}x${Math.round(winRect?.height ?? 0)} ` +
     `canvas=${Math.round(canvasRect?.width ?? 0)}x${Math.round(canvasRect?.height ?? 0)} ` +
+    `backing=${backingW}x${backingH} ` +
     `css opacity=${canvasStyle?.opacity ?? 'n/a'} visibility=${canvasStyle?.visibility ?? 'n/a'} ` +
     `display=${canvasStyle?.display ?? 'n/a'} zIndex=${canvasStyle?.zIndex ?? 'n/a'} ` +
     `classes="${winClasses}" gl="${renderer}" maxTex=${maxTex}`,
+  );
+}
+
+export function logPortraitWebGLCapabilities(gl: THREE.WebGLRenderer): void {
+  const caps = gl.capabilities;
+  debugLog(
+    SCOPE,
+    `webgl isWebGL2=${caps.isWebGL2} maxTextures=${caps.maxTextures} maxVertexTextures=${caps.maxVertexTextures}`,
+  );
+}
+
+export function attachPortraitWebGLContextListeners(gl: THREE.WebGLRenderer): void {
+  const canvas = gl.domElement;
+  canvas.addEventListener('webglcontextlost', (event) => {
+    event.preventDefault();
+    debugLog(SCOPE, 'WARN webglcontextlost');
+  });
+  canvas.addEventListener('webglcontextrestored', () => {
+    debugLog(SCOPE, 'webglcontextrestored');
+  });
+}
+
+export function logPortraitSceneGraph(root: THREE.Object3D): void {
+  let meshCount = 0;
+  let visibleMeshes = 0;
+  let hiddenMeshes = 0;
+  let skinWithoutMap = 0;
+  let physical = 0;
+  let standard = 0;
+  let basic = 0;
+
+  root.traverse((child) => {
+    const mesh = child as THREE.Mesh;
+    if (!mesh.isMesh) return;
+    meshCount += 1;
+    if (mesh.visible) visibleMeshes += 1;
+    else hiddenMeshes += 1;
+
+    const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+    for (const material of materials) {
+      if (!material) continue;
+      if ((material as THREE.MeshPhysicalMaterial).isMeshPhysicalMaterial) physical += 1;
+      else if ((material as THREE.MeshStandardMaterial).isMeshStandardMaterial) standard += 1;
+      else if ((material as THREE.MeshBasicMaterial).isMeshBasicMaterial) basic += 1;
+
+      const meshName = mesh.name || '';
+      const materialName = material.name || '';
+      const skinLike = /skin|head|face|body/i.test(meshName) || /skin|head|face|body/i.test(materialName);
+      const std = material as THREE.MeshStandardMaterial;
+      if (skinLike && !('map' in std && std.map)) skinWithoutMap += 1;
+    }
+  });
+
+  debugLog(
+    SCOPE,
+    `sceneGraph meshes=${meshCount} visible=${visibleMeshes} hidden=${hiddenMeshes} ` +
+    `physical=${physical} standard=${standard} basic=${basic} skinWithoutMap=${skinWithoutMap}`,
   );
 }
 
@@ -223,10 +284,12 @@ export function logPortraitDelayedProbe(
     ? ` triangles=${renderInfo.triangles} calls=${renderInfo.calls}`
     : '';
   const opacity = canvasOpacityLabel(canvasEl);
+  const backing = canvasEl ? `${canvasEl.width}x${canvasEl.height}` : 'n/a';
   const prefix = probe.classify === 'visible_frame' ? '' : 'WARN ';
   debugLog(
     SCOPE,
-    `${prefix}delayedProbe t=${delayMs}ms classify=${probe.classify} center=${probe.hex} canvasOpacity=${opacity}${extra}`,
+    `${prefix}delayedProbe t=${delayMs}ms classify=${probe.classify} center=${probe.hex} ` +
+    `canvasOpacity=${opacity} backing=${backing}${extra}`,
   );
 }
 

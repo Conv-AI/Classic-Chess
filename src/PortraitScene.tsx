@@ -12,7 +12,21 @@ type Props = {
   children: ReactNode;
 };
 
-const MOBILE_LIGHT_BOOST = 0.3;
+function propagateEnvMap(scene: THREE.Scene): void {
+  if (!scene.environment) return;
+  scene.traverse((child) => {
+    const mesh = child as THREE.Mesh;
+    if (!mesh.isMesh) return;
+    const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+    for (const material of materials) {
+      if (!material) continue;
+      const std = material as THREE.MeshStandardMaterial;
+      if (!std.isMeshStandardMaterial && !(std as THREE.MeshPhysicalMaterial).isMeshPhysicalMaterial) continue;
+      std.envMap = scene.environment;
+      std.needsUpdate = true;
+    }
+  });
+}
 
 export default function PortraitScene({
   bgColor,
@@ -22,7 +36,7 @@ export default function PortraitScene({
 }: Props) {
   const { gl, scene } = useThree();
   const envLoggedRef = useRef(false);
-  const lightBoostRef = useRef(false);
+  const envPropagatedRef = useRef(false);
 
   useEffect(() => {
     gl.toneMapping = THREE.ACESFilmicToneMapping;
@@ -32,21 +46,28 @@ export default function PortraitScene({
 
   useEffect(() => {
     envLoggedRef.current = false;
-    lightBoostRef.current = false;
+    envPropagatedRef.current = false;
 
-    const logEnv = () => {
-      if (envLoggedRef.current) return;
+    const tick = () => {
       if (!enableEnvironment) {
-        envLoggedRef.current = true;
-        logPortraitEnvironment({
-          hasEnvironment: false,
-          environmentIntensity: scene.environmentIntensity,
-          enablePostProcessing,
-          enableEnvironment,
-        });
+        if (!envLoggedRef.current) {
+          envLoggedRef.current = true;
+          logPortraitEnvironment({
+            hasEnvironment: false,
+            environmentIntensity: scene.environmentIntensity,
+            enablePostProcessing,
+            enableEnvironment,
+          });
+        }
         return;
       }
-      if (scene.environment) {
+
+      if (scene.environment && !envPropagatedRef.current) {
+        envPropagatedRef.current = true;
+        propagateEnvMap(scene);
+      }
+
+      if (scene.environment && !envLoggedRef.current) {
         envLoggedRef.current = true;
         logPortraitEnvironment({
           hasEnvironment: true,
@@ -57,19 +78,10 @@ export default function PortraitScene({
       }
     };
 
-    const interval = window.setInterval(logEnv, 200);
+    const interval = window.setInterval(tick, 200);
     const timeout = window.setTimeout(() => {
       if (!envLoggedRef.current && enableEnvironment) {
         warnPortraitEnvironmentMissing();
-      }
-      if (!scene.environment && enableEnvironment && !lightBoostRef.current) {
-        lightBoostRef.current = true;
-        scene.traverse((child) => {
-          if ((child as THREE.DirectionalLight).isDirectionalLight) {
-            const light = child as THREE.DirectionalLight;
-            light.intensity += MOBILE_LIGHT_BOOST;
-          }
-        });
       }
     }, 2000);
 
